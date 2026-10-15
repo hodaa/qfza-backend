@@ -1,10 +1,11 @@
 """API routes for the JumpTo application."""
 
 import asyncio
+import re
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +38,9 @@ from app.services import (
     FullTextSearchService,
     JobService,
     SearchService,
+    TranscriptPdfRenderer,
+    assemble_lines,
+    is_rtl_transcript,
     validate_youtube_url,
 )
 from app.services.history_recorder import (
@@ -329,6 +333,51 @@ async def search_video(
         no_speech = not await video_repo.has_speech_text(video_id)
         return VideoSearchResponse(status=SearchStatus.NOT_FOUND, results=[], no_speech=no_speech)
     return VideoSearchResponse(status="found", results=results)
+
+
+def _transcript_filename(youtube_video_id: str) -> str:
+    """Build a download filename that is safe to place in a response header."""
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "", youtube_video_id)[:64] or "video"
+    return f"transcript-{safe_id}.pdf"
+
+
+@router.get(
+    "/api/videos/{youtube_video_id}/transcript.pdf",
+    responses={
+        200: {"content": {"application/pdf": {}}, "description": "Transcript PDF"},
+        404: {"description": "Video not found or not transcribed"},
+    },
+)
+async def download_transcript_pdf(
+    youtube_video_id: str,
+    video_repo: VideoRepository = Depends(get_video_repo),
+    transcript_repo: TranscriptWordRepository = Depends(get_transcript_repo),
+) -> Response:
+    """Download a transcribed video's full transcript as a PDF document."""
+    video = await video_repo.get_by_video_id_lite(youtube_video_id)
+    if not video:
+        raise VideoNotFoundError(youtube_video_id)
+    if not video.transcribed_at:
+        raise VideoNotTranscribedError(youtube_video_id)
+
+    words = await transcript_repo.list_all_for_video(video.id)
+    if not words:
+        raise VideoNotTranscribedError(youtube_video_id)
+
+    document = TranscriptPdfRenderer().render(
+        title=video.title or youtube_video_id,
+        lines=assemble_lines(words),
+        is_rtl=is_rtl_transcript(words, video.language),
+    )
+    return Response(
+        content=document,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{_transcript_filename(youtube_video_id)}"'
+            )
+        },
+    )
 
 
 @router.get(

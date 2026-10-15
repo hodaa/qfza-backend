@@ -60,3 +60,12 @@ class TranscriptWordRepository:
             .order_by(TranscriptWord.word_index)
         )
         return result.scalars().all()
+
+    async def list_all_for_video(self, video_id: UUID) -> Sequence[TranscriptWord]:
+        """Get every word of a video's transcript, in transcript order."""
+        result = await self.session.execute(
+            select(TranscriptWord)
+            .where(TranscriptWord.video_id == video_id)
+            .order_by(TranscriptWord.word_index)
+        )
+        return result.scalars().all()

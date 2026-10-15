@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import defer
+from sqlalchemy.orm import defer, noload
 
 from app.core.logging import get_logger
 from app.models import Video
@@ -31,7 +31,11 @@ class VideoRepository:
         result = await self.session.execute(
             select(Video)
             .where(Video.id == video_id)
-            .options(defer(Video.transcript), defer(Video.transcript_tsvector))
+            .options(
+                defer(Video.transcript),
+                defer(Video.transcript_tsvector),
+                noload(Video.transcript_words),
+            )
         )
         return result.scalar_one_or_none()
 
@@ -45,7 +49,11 @@ class VideoRepository:
         result = await self.session.execute(
             select(Video)
             .where(Video.video_id == video_id)
-            .options(defer(Video.transcript), defer(Video.transcript_tsvector))
+            .options(
+                defer(Video.transcript),
+                defer(Video.transcript_tsvector),
+                noload(Video.transcript_words),
+            )
         )
         return result.scalar_one_or_none()
 

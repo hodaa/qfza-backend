@@ -22,6 +22,8 @@ dependencies = [
     "greenlet==3.1.1",
     "argon2-cffi==23.1.0",
     "PyJWT[crypto]==2.10.1",
+    "fpdf2==2.8.9",
+    "uharfbuzz==0.56.3",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +46,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["app*", "alembic*"]
 exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+app = ["assets/fonts/*.ttf", "assets/fonts/*.txt"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
