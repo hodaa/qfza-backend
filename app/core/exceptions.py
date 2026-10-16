@@ -137,6 +137,21 @@ class VideoNotTranscribedError(DomainError):
         )
 
 
+class VideoDownloadUnavailableError(DomainError):
+    """The media tooling (yt-dlp or ffmpeg) is not present in this runtime.
+
+    A deployment that ships no media tooling refuses the download up front
+    instead of failing halfway through it; which tool is missing is logged for
+    the operator and never disclosed to the client.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Video downloads are not available in this deployment",
+            code="SERVICE_UNAVAILABLE",
+        )
+
+
 class InvalidYouTubeURLError(DomainError):
     """Exception for invalid YouTube URL (domain validation, not format validation)."""
 

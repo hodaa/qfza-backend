@@ -2,17 +2,19 @@
 
 import asyncio
 import re
+import shutil
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from app.api.identity import resolve_identity
 from app.core.config import Settings, get_settings
 from app.core.database import get_db_session
-from app.core.exceptions import VideoNotFoundError, VideoNotTranscribedError
+from app.core.exceptions import ValidationError, VideoNotFoundError, VideoNotTranscribedError
 from app.core.logging import get_logger
 from app.models import Video
 from app.repositories import (
@@ -32,15 +34,20 @@ from app.schemas import (
     SearchResponseProcessing,
     SearchStatus,
     StatusResponse,
+    VideoFormatsResponse,
     VideoSearchResponse,
 )
 from app.services import (
+    MAX_AVC1_HEIGHT,
+    MIN_VIDEO_HEIGHT,
     FullTextSearchService,
     JobService,
     SearchService,
     TranscriptPdfRenderer,
     assemble_lines,
+    download_video_file,
     is_rtl_transcript,
+    list_video_heights,
     validate_youtube_url,
 )
 from app.services.history_recorder import (
@@ -335,10 +342,48 @@ async def search_video(
     return VideoSearchResponse(status="found", results=results)
 
 
-def _transcript_filename(youtube_video_id: str) -> str:
+def _download_filename(
+    youtube_video_id: str,
+    *,
+    prefix: str,
+    suffix: str,
+    range_start: int | None = None,
+    range_end: int | None = None,
+    height: int | None = None,
+) -> str:
     """Build a download filename that is safe to place in a response header."""
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "", youtube_video_id)[:64] or "video"
-    return f"transcript-{safe_id}.pdf"
+    label = f"-{height}p" if height is not None else ""
+    if range_start is not None:
+        label += f"-{range_start}-{range_end if range_end is not None else 'end'}"
+    return f"{prefix}-{safe_id}{label}{suffix}"
+
+
+def _validated_range(
+    start: float | None, end: float | None, duration_seconds: int | None
+) -> tuple[int | None, int | None]:
+    """Validate the requested download range against the video's duration.
+
+    Fractional seconds are truncated to whole seconds, since match timestamps
+    arrive as floats while both YouTube moments and yt-dlp sections are
+    whole-second in practice. An end beyond the video is clamped rather than
+    refused, so a caller that only knows roughly where the interesting part
+    stops still gets a file.
+    """
+    if start is None:
+        if end is not None:
+            raise ValidationError("An end time requires a start time", field="end")
+        return None, None
+    whole_start = int(start)
+    whole_end = int(end) if end is not None else None
+    if whole_end is not None and whole_end <= whole_start:
+        raise ValidationError("The end time must be after the start time", field="end")
+    if duration_seconds is not None:
+        if whole_start >= duration_seconds:
+            raise ValidationError("The start time is beyond the video's duration", field="start")
+        if whole_end is not None and whole_end > duration_seconds:
+            whole_end = duration_seconds
+    return whole_start, whole_end
 
 
 @router.get(
@@ -374,10 +419,88 @@ async def download_transcript_pdf(
         media_type="application/pdf",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="{_transcript_filename(youtube_video_id)}"'
+                "attachment; filename="
+                f'"{_download_filename(youtube_video_id, prefix="transcript", suffix=".pdf")}"'
             )
         },
     )
+
+
+@router.get(
+    "/api/videos/{youtube_video_id}/video.mp4",
+    responses={
+        200: {"content": {"video/mp4": {}}, "description": "Video file"},
+        404: {"description": "Video not found"},
+        422: {"description": "Validation error"},
+        502: {"description": "YouTube could not provide the video"},
+        503: {"description": "Download tooling is unavailable in this deployment"},
+    },
+)
+async def download_video(
+    youtube_video_id: str,
+    start: float | None = Query(None, ge=0, description="Section start in seconds"),
+    end: float | None = Query(None, ge=0, description="Section end in seconds"),
+    height: int | None = Query(
+        None,
+        ge=MIN_VIDEO_HEIGHT,
+        le=MAX_AVC1_HEIGHT,
+        description="Preferred H.264 quality in pixels",
+    ),
+    video_repo: VideoRepository = Depends(get_video_repo),
+) -> FileResponse:
+    """Download a video's media as an MP4 file, or one section of it.
+
+    The fetch happens while the request is open: yt-dlp downloads and merges
+    the streams before the first byte leaves, so the browser waits and then
+    receives a complete file with a known length. With ``start``, only the
+    section from it to ``end`` (or the video's end) is kept. With ``height``,
+    the file is capped at that H.264 quality.
+    """
+    video = await video_repo.get_by_video_id_lite(youtube_video_id)
+    if not video:
+        raise VideoNotFoundError(youtube_video_id)
+
+    start, end = _validated_range(start, end, video.duration_seconds)
+    path = await download_video_file(
+        youtube_video_id, start_seconds=start, end_seconds=end, height=height
+    )
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        filename=_download_filename(
+            youtube_video_id,
+            prefix="video",
+            suffix=".mp4",
+            range_start=start,
+            range_end=end,
+            height=height,
+        ),
+        background=BackgroundTask(shutil.rmtree, path.parent, ignore_errors=True),
+    )
+
+
+@router.get(
+    "/api/videos/{youtube_video_id}/formats",
+    response_model=VideoFormatsResponse,
+    responses={
+        404: {"description": "Video not found"},
+        502: {"description": "YouTube could not provide the video's formats"},
+        503: {"description": "Download tooling is unavailable in this deployment"},
+    },
+)
+async def list_video_formats(
+    youtube_video_id: str,
+    video_repo: VideoRepository = Depends(get_video_repo),
+) -> VideoFormatsResponse:
+    """List the heights a video can be downloaded in, tallest first.
+
+    A metadata-only probe on YouTube; an empty list means no H.264 quality is
+    named and the download should fall back to its best available stream.
+    """
+    video = await video_repo.get_by_video_id_lite(youtube_video_id)
+    if not video:
+        raise VideoNotFoundError(youtube_video_id)
+    return VideoFormatsResponse(heights=await list_video_heights(youtube_video_id))
 
 
 @router.get(

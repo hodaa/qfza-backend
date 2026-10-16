@@ -149,6 +149,17 @@ class FullTextSearchResponse(BaseModel):
     results: list[VideoSearchResult] = Field(default_factory=list)
 
 
+class VideoFormatsResponse(BaseModel):
+    """Response schema for GET /api/videos/{youtube_video_id}/formats."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    heights: list[int] = Field(
+        default_factory=list,
+        description="Downloadable H.264 heights in pixels, tallest first",
+    )
+
+
 class StatusResponse(BaseModel):
     """Response schema for GET /api/status/{job_id}."""
 
