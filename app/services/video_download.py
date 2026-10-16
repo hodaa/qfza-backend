@@ -6,8 +6,9 @@ client silently falls back to a stream container instead of the MP4 that was
 asked for. The download therefore lands in a temporary directory and is served
 from there, and the caller removes that directory once the file has been sent.
 
-The merge needs ffmpeg beside yt-dlp. A runtime that carries no media tooling -
-the serverless deploy, for one - refuses the download up front rather than
+The merge needs ffmpeg beside yt-dlp. A runtime that carries no system ffmpeg -
+the serverless deploy, for one - falls back to the static binary shipped inside
+the imageio-ffmpeg wheel before refusing the download up front rather than
 failing halfway through the response.
 """
 
@@ -67,13 +68,38 @@ _TEMP_PREFIX = "qfza-video-"
 _DOWNLOAD_STEM = "video"
 _YT_DLP_MODULE = "yt_dlp"
 _FFMPEG_BINARY = "ffmpeg"
+_FFMPEG_PACKAGE = "imageio_ffmpeg"
+
+
+def _bundled_ffmpeg() -> str | None:
+    """Path to the static ffmpeg inside its Python package, if one is installed.
+
+    The serverless deploy carries no system ffmpeg; imageio-ffmpeg ships a
+    static binary in the wheel so the merge still has a tool to run.
+    """
+    try:
+        package = importlib.import_module(_FFMPEG_PACKAGE)
+    except ImportError:
+        return None
+    try:
+        return package.get_ffmpeg_exe()
+    except Exception:
+        logger.warning("Bundled ffmpeg is installed but unusable")
+        return None
+
+
+def _ffmpeg_location() -> str | None:
+    """The --ffmpeg-location value, or None when yt-dlp finds ffmpeg itself."""
+    if shutil.which(_FFMPEG_BINARY) is not None:
+        return None
+    return _bundled_ffmpeg()
 
 
 def _missing_tool() -> str | None:
     """Name the first media tool this runtime does not have, if any."""
     if importlib.util.find_spec(_YT_DLP_MODULE) is None:
         return _YT_DLP_MODULE
-    if shutil.which(_FFMPEG_BINARY) is None:
+    if shutil.which(_FFMPEG_BINARY) is None and _bundled_ffmpeg() is None:
         return _FFMPEG_BINARY
     return None
 
@@ -104,6 +130,7 @@ def _build_command(
     destination: Path,
     section: str | None = None,
     height: int | None = None,
+    ffmpeg_location: str | None = None,
 ) -> list[str]:
     """Build the yt-dlp command that downloads one video to ``destination``."""
     command = [
@@ -116,6 +143,8 @@ def _build_command(
         MERGE_FORMAT,
         "--no-playlist",
     ]
+    if ffmpeg_location is not None:
+        command.extend(["--ffmpeg-location", ffmpeg_location])
     if section is not None:
         command.extend(["--download-sections", section])
     command.extend(["-o", str(destination), normalize_youtube_url(youtube_video_id)])
@@ -160,10 +189,11 @@ async def _download_with_retry(
     destination: Path,
     section: str | None = None,
     height: int | None = None,
+    ffmpeg_location: str | None = None,
 ) -> tuple[int, bytes]:
     """Download the video, retrying once when the first attempt fails fast."""
     started = time.monotonic()
-    command = _build_command(youtube_video_id, destination, section, height)
+    command = _build_command(youtube_video_id, destination, section, height, ffmpeg_location)
     returncode, stderr = await _run_yt_dlp(command)
     if returncode == 0 and destination.exists():
         return returncode, stderr
@@ -206,11 +236,12 @@ async def download_video_file(
     if missing:
         logger.warning("Video download tooling missing", tool=missing)
         raise VideoDownloadUnavailableError()
+    ffmpeg_location = _ffmpeg_location()
     section = _format_section(start_seconds, end_seconds) if start_seconds is not None else None
     directory = Path(tempfile.mkdtemp(prefix=_TEMP_PREFIX))
     destination = directory / f"{_DOWNLOAD_STEM}.{MERGE_FORMAT}"
     returncode, stderr = await _download_with_retry(
-        youtube_video_id, directory, destination, section, height
+        youtube_video_id, directory, destination, section, height, ffmpeg_location
     )
     if returncode == 0 and destination.exists():
         return destination

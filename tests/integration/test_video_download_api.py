@@ -80,6 +80,7 @@ async def test_returns_503_when_tooling_is_missing(
     db_session.add(_video("vid503"))
     await db_session.flush()
     monkeypatch.setattr("app.services.video_download.shutil.which", lambda name: None)
+    monkeypatch.setattr("app.services.video_download._bundled_ffmpeg", lambda: None)
 
     response = await client.get("/api/videos/vid503/video.mp4")
 
@@ -415,6 +416,7 @@ class TestVideoFormats:
         db_session.add(_video("vidprobe503"))
         await db_session.flush()
         monkeypatch.setattr("app.services.video_download.shutil.which", lambda name: None)
+        monkeypatch.setattr("app.services.video_download._bundled_ffmpeg", lambda: None)
 
         response = await client.get("/api/videos/vidprobe503/formats")
 

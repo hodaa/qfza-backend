@@ -3,6 +3,8 @@
 import asyncio
 import json
 import shutil
+import sys
+import types
 from collections.abc import Callable
 from pathlib import Path
 
@@ -34,19 +36,82 @@ def _succeeding_run(returncode: int = 0) -> Callable[[list[str]], object]:
     return run
 
 
+@pytest.fixture
+def tools_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend yt-dlp and a system ffmpeg are both installed."""
+    monkeypatch.setattr(video_download, "_missing_tool", lambda: None)
+    monkeypatch.setattr(video_download, "_ffmpeg_location", lambda: None)
+
+
 class TestMissingTool:
     def test_names_yt_dlp_when_the_module_is_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(video_download.importlib.util, "find_spec", lambda name: None)
         assert video_download._missing_tool() == "yt_dlp"
 
-    def test_names_ffmpeg_when_the_binary_is_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_names_ffmpeg_when_no_binary_and_no_bundle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(video_download.shutil, "which", lambda name: None)
+        monkeypatch.setattr(video_download, "_bundled_ffmpeg", lambda: None)
         assert video_download._missing_tool() == "ffmpeg"
 
     def test_reports_nothing_when_both_are_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(video_download.importlib.util, "find_spec", lambda name: object())
         monkeypatch.setattr(video_download.shutil, "which", lambda name: "/usr/bin/ffmpeg")
         assert video_download._missing_tool() is None
+
+    def test_reports_nothing_when_the_bundle_stands_in(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(video_download.importlib.util, "find_spec", lambda name: object())
+        monkeypatch.setattr(video_download.shutil, "which", lambda name: None)
+        monkeypatch.setattr(video_download, "_bundled_ffmpeg", lambda: "/wheel/ffmpeg")
+        assert video_download._missing_tool() is None
+
+
+class TestBundledFfmpeg:
+    def test_reads_the_binary_out_of_the_package(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        package = types.SimpleNamespace(get_ffmpeg_exe=lambda: "/wheel/ffmpeg")
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", package)
+
+        assert video_download._bundled_ffmpeg() == "/wheel/ffmpeg"
+
+    def test_returns_nothing_when_the_package_is_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+
+        assert video_download._bundled_ffmpeg() is None
+
+    def test_returns_nothing_when_the_binary_cannot_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def explode() -> str:
+            raise RuntimeError("no binary for this platform")
+
+        package = types.SimpleNamespace(get_ffmpeg_exe=explode)
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", package)
+
+        assert video_download._bundled_ffmpeg() is None
+
+
+class TestFfmpegLocation:
+    def test_lets_yt_dlp_find_a_system_binary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(video_download.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+        assert video_download._ffmpeg_location() is None
+
+    def test_falls_back_to_the_bundled_binary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(video_download.shutil, "which", lambda name: None)
+        monkeypatch.setattr(video_download, "_bundled_ffmpeg", lambda: "/wheel/ffmpeg")
+
+        assert video_download._ffmpeg_location() == "/wheel/ffmpeg"
+
+    def test_returns_nothing_when_ffmpeg_is_nowhere(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(video_download.shutil, "which", lambda name: None)
+        monkeypatch.setattr(video_download, "_bundled_ffmpeg", lambda: None)
+
+        assert video_download._ffmpeg_location() is None
 
 
 class TestBuildCommand:
@@ -61,6 +126,7 @@ class TestBuildCommand:
         assert "-o" in command
         assert command[command.index("-o") + 1] == str(destination)
         assert "--download-sections" not in command
+        assert "--ffmpeg-location" not in command
 
     def test_adds_the_section_flag_when_a_range_is_given(self, tmp_path: Path) -> None:
         destination = tmp_path / "video.mp4"
@@ -78,6 +144,13 @@ class TestBuildCommand:
         command = video_download._build_command("m5IWI6xFRms", tmp_path / "video.mp4", None, 720)
 
         assert command[command.index("-f") + 1] == video_download._format_selector(720)
+
+    def test_points_yt_dlp_at_a_bundled_ffmpeg(self, tmp_path: Path) -> None:
+        command = video_download._build_command(
+            "m5IWI6xFRms", tmp_path / "video.mp4", None, None, "/wheel/ffmpeg"
+        )
+
+        assert command[command.index("--ffmpeg-location") + 1] == "/wheel/ffmpeg"
 
 
 class TestFormatSection:
@@ -138,9 +211,8 @@ class TestRunYtDlp:
 
 class TestDownloadVideoFile:
     async def test_returns_the_merged_file(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, tools_present: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.setattr(video_download, "_missing_tool", lambda: None)
         monkeypatch.setattr(video_download, "_run_yt_dlp", _succeeding_run())
 
         path = await video_download.download_video_file("abc123")
@@ -148,6 +220,28 @@ class TestDownloadVideoFile:
         try:
             assert path.name == "video.mp4"
             assert path.read_bytes() == MP4_BYTES
+        finally:
+            shutil.rmtree(path.parent, ignore_errors=True)
+
+    async def test_tells_yt_dlp_where_the_bundled_ffmpeg_is(
+        self, tools_present: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        directory = tmp_path / "download"
+        calls: list[list[str]] = []
+
+        async def recording_run(command: list[str]) -> tuple[int, bytes]:
+            calls.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(MP4_BYTES)
+            return 0, b""
+
+        monkeypatch.setattr(video_download, "_ffmpeg_location", lambda: "/wheel/ffmpeg")
+        monkeypatch.setattr(video_download, "_run_yt_dlp", recording_run)
+        monkeypatch.setattr(video_download.tempfile, "mkdtemp", _fake_mkdtemp_at(directory))
+
+        path = await video_download.download_video_file("abc123")
+
+        try:
+            assert calls[0][calls[0].index("--ffmpeg-location") + 1] == "/wheel/ffmpeg"
         finally:
             shutil.rmtree(path.parent, ignore_errors=True)
 
@@ -160,14 +254,13 @@ class TestDownloadVideoFile:
         assert excinfo.value.code == "SERVICE_UNAVAILABLE"
 
     async def test_discards_the_directory_when_the_download_fails(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, tools_present: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         directory = tmp_path / "download"
 
         async def failing_run(command: list[str]) -> tuple[int, bytes]:
             return 1, b"ERROR: Video unavailable"
 
-        monkeypatch.setattr(video_download, "_missing_tool", lambda: None)
         monkeypatch.setattr(video_download, "_run_yt_dlp", failing_run)
         monkeypatch.setattr(video_download, "_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr(video_download.tempfile, "mkdtemp", _fake_mkdtemp_at(directory))
@@ -178,7 +271,7 @@ class TestDownloadVideoFile:
         assert not directory.exists()
 
     async def test_sends_the_requested_section_to_yt_dlp(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, tools_present: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         directory = tmp_path / "download"
         calls: list[list[str]] = []
@@ -188,7 +281,6 @@ class TestDownloadVideoFile:
             Path(command[command.index("-o") + 1]).write_bytes(MP4_BYTES)
             return 0, b""
 
-        monkeypatch.setattr(video_download, "_missing_tool", lambda: None)
         monkeypatch.setattr(video_download, "_run_yt_dlp", recording_run)
         monkeypatch.setattr(video_download.tempfile, "mkdtemp", _fake_mkdtemp_at(directory))
 
@@ -200,7 +292,7 @@ class TestDownloadVideoFile:
             shutil.rmtree(path.parent, ignore_errors=True)
 
     async def test_retries_once_when_the_first_attempt_fails_fast(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, tools_present: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         directory = tmp_path / "download"
         calls: list[list[str]] = []
@@ -217,7 +309,6 @@ class TestDownloadVideoFile:
             destination.write_bytes(MP4_BYTES)
             return 0, b""
 
-        monkeypatch.setattr(video_download, "_missing_tool", lambda: None)
         monkeypatch.setattr(video_download, "_run_yt_dlp", flaky_run)
         monkeypatch.setattr(video_download, "_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr(video_download.tempfile, "mkdtemp", _fake_mkdtemp_at(directory))
@@ -233,7 +324,7 @@ class TestDownloadVideoFile:
             shutil.rmtree(path.parent, ignore_errors=True)
 
     async def test_does_not_retry_after_a_slow_failure(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, tools_present: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         directory = tmp_path / "download"
         calls: list[list[str]] = []
@@ -242,7 +333,6 @@ class TestDownloadVideoFile:
             calls.append(command)
             return 1, b"ERROR: unable to download video data: HTTP Error 403: Forbidden"
 
-        monkeypatch.setattr(video_download, "_missing_tool", lambda: None)
         monkeypatch.setattr(video_download, "_run_yt_dlp", failing_run)
         monkeypatch.setattr(video_download, "_RETRY_BELOW_SECONDS", -1)
         monkeypatch.setattr(video_download.tempfile, "mkdtemp", _fake_mkdtemp_at(directory))
@@ -253,14 +343,13 @@ class TestDownloadVideoFile:
         assert len(calls) == 1
 
     async def test_discards_the_directory_when_no_file_was_written(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, tools_present: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         directory = tmp_path / "download"
 
         async def quiet_run(command: list[str]) -> tuple[int, bytes]:
             return 0, b""
 
-        monkeypatch.setattr(video_download, "_missing_tool", lambda: None)
         monkeypatch.setattr(video_download, "_run_yt_dlp", quiet_run)
         monkeypatch.setattr(video_download, "_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr(video_download.tempfile, "mkdtemp", _fake_mkdtemp_at(directory))
@@ -271,7 +360,7 @@ class TestDownloadVideoFile:
         assert not directory.exists()
 
     async def test_caps_the_download_at_the_requested_height(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, tools_present: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         directory = tmp_path / "download"
         calls: list[list[str]] = []
@@ -281,7 +370,6 @@ class TestDownloadVideoFile:
             Path(command[command.index("-o") + 1]).write_bytes(MP4_BYTES)
             return 0, b""
 
-        monkeypatch.setattr(video_download, "_missing_tool", lambda: None)
         monkeypatch.setattr(video_download, "_run_yt_dlp", recording_run)
         monkeypatch.setattr(video_download.tempfile, "mkdtemp", _fake_mkdtemp_at(directory))
 
