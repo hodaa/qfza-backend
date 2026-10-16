@@ -10,6 +10,10 @@ The merge needs ffmpeg beside yt-dlp. A runtime that carries no system ffmpeg -
 the serverless deploy, for one - falls back to the static binary shipped inside
 the imageio-ffmpeg wheel before refusing the download up front rather than
 failing halfway through the response.
+
+The serverless runtime also assembles the app's sys.path without exporting it,
+so a plain child interpreter cannot import yt-dlp; the child is handed the
+package directory through PYTHONPATH instead.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -151,12 +156,30 @@ def _build_command(
     return command
 
 
+def _dependency_env() -> dict[str, str]:
+    """Environment for the yt-dlp child that can import the app's packages.
+
+    The serverless runtime puts its package directory on sys.path without
+    exporting it, so a freshly spawned interpreter cannot import yt-dlp; point
+    the child's PYTHONPATH at the directory that holds the package.
+    """
+    env = dict(os.environ)
+    spec = importlib.util.find_spec(_YT_DLP_MODULE)
+    if spec is None or not spec.origin:
+        return env
+    directory = str(Path(spec.origin).parent.parent)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{directory}{os.pathsep}{existing}" if existing else directory
+    return env
+
+
 async def _run_yt_dlp(command: list[str]) -> tuple[int, bytes]:
     """Run yt-dlp to completion, returning its exit code and stderr."""
     process = await asyncio.create_subprocess_exec(
         *command,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
+        env=_dependency_env(),
     )
     try:
         _, stderr = await asyncio.wait_for(process.communicate(), DOWNLOAD_TIMEOUT_SECONDS)
@@ -268,6 +291,7 @@ async def _run_probe(command: list[str]) -> tuple[int, bytes, bytes]:
         *command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_dependency_env(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), PROBE_TIMEOUT_SECONDS)

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shutil
 import sys
 import types
@@ -173,7 +174,62 @@ class TestFormatSelector:
         )
 
 
+class TestDependencyEnv:
+    def test_adds_the_directory_holding_yt_dlp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec = types.SimpleNamespace(origin="/var/task/.vercel/python/yt_dlp/__init__.py")
+        monkeypatch.setattr(video_download.importlib.util, "find_spec", lambda name: spec)
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+
+        env = video_download._dependency_env()
+
+        assert env["PYTHONPATH"] == "/var/task/.vercel/python"
+
+    def test_keeps_an_existing_pythonpath(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec = types.SimpleNamespace(origin="/var/task/.vercel/python/yt_dlp/__init__.py")
+        monkeypatch.setattr(video_download.importlib.util, "find_spec", lambda name: spec)
+        monkeypatch.setenv("PYTHONPATH", "/elsewhere")
+
+        env = video_download._dependency_env()
+
+        assert env["PYTHONPATH"] == f"/var/task/.vercel/python{os.pathsep}/elsewhere"
+
+    def test_leaves_the_environment_untouched_without_yt_dlp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(video_download.importlib.util, "find_spec", lambda name: None)
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+
+        env = video_download._dependency_env()
+
+        assert "PYTHONPATH" not in env
+
+
 class TestRunYtDlp:
+    async def test_hands_the_child_the_dependency_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class DoneProcess:
+            returncode = 0
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return b"", b""
+
+        async def spawn(*args: object, **kwargs: object) -> DoneProcess:
+            captured.update(kwargs)
+            return DoneProcess()
+
+        spec = types.SimpleNamespace(origin="/var/task/.vercel/python/yt_dlp/__init__.py")
+        monkeypatch.setattr(video_download.importlib.util, "find_spec", lambda name: spec)
+        monkeypatch.setattr(video_download.asyncio, "create_subprocess_exec", spawn)
+
+        await video_download._run_yt_dlp(["yt-dlp"])
+
+        env = captured["env"]
+        assert isinstance(env, dict)
+        assert env["PYTHONPATH"] == "/var/task/.vercel/python"
+
     async def test_kills_the_process_when_the_download_times_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -421,6 +477,31 @@ class TestBuildProbeCommand:
 
 
 class TestRunProbe:
+    async def test_hands_the_child_the_dependency_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class DoneProcess:
+            returncode = 0
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return b"{}", b""
+
+        async def spawn(*args: object, **kwargs: object) -> DoneProcess:
+            captured.update(kwargs)
+            return DoneProcess()
+
+        spec = types.SimpleNamespace(origin="/var/task/.vercel/python/yt_dlp/__init__.py")
+        monkeypatch.setattr(video_download.importlib.util, "find_spec", lambda name: spec)
+        monkeypatch.setattr(video_download.asyncio, "create_subprocess_exec", spawn)
+
+        await video_download._run_probe(["yt-dlp"])
+
+        env = captured["env"]
+        assert isinstance(env, dict)
+        assert env["PYTHONPATH"] == "/var/task/.vercel/python"
+
     async def test_kills_the_process_when_the_probe_times_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
