@@ -137,18 +137,14 @@ class VideoNotTranscribedError(DomainError):
         )
 
 
-class VideoDownloadUnavailableError(DomainError):
-    """The media tooling (yt-dlp or ffmpeg) is not present in this runtime.
+class DownloadNotFoundError(NotFoundError):
+    """Exception for a video download request that does not resolve."""
 
-    A deployment that ships no media tooling refuses the download up front
-    instead of failing halfway through it; which tool is missing is logged for
-    the operator and never disclosed to the client.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self, download_id: str) -> None:
         super().__init__(
-            "Video downloads are not available in this deployment",
-            code="SERVICE_UNAVAILABLE",
+            f"Download with id {download_id} not found",
+            resource="download",
+            resource_id=download_id,
         )
 
 

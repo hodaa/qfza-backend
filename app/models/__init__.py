@@ -8,11 +8,13 @@ from .models import (
     TranscriptWord,
     User,
     Video,
+    VideoDownload,
 )
 
 __all__ = [
     "ContactMessage",
     "Video",
+    "VideoDownload",
     "TranscriptWord",
     "Job",
     "User",

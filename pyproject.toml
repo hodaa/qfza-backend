@@ -18,13 +18,12 @@ dependencies = [
     "psycopg2-binary==2.9.10",
     "asyncpg==0.31.0",
     "python-multipart==0.0.18",
-    "yt-dlp==2026.8.19",
-    "imageio-ffmpeg==0.6.0",
     "greenlet==3.1.1",
     "argon2-cffi==23.1.0",
     "PyJWT[crypto]==2.10.1",
     "fpdf2==2.8.9",
     "uharfbuzz==0.56.3",
+    "vercel-blob==0.5.0",
 ]
 
 [project.optional-dependencies]

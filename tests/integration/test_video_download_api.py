@@ -1,15 +1,19 @@
-"""Integration tests for the video MP4 download endpoint."""
+"""Integration tests for the video download endpoints."""
 
-import json
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Video
-
-MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"fake-video-payload" * 100
+from app.models import Video, VideoDownload
+from app.services.messaging import celery_app
+from app.services.video_downloads import (
+    STATUS_CONSUMED,
+    STATUS_PENDING,
+    STATUS_READY,
+    SWEEP_FAILURE_MESSAGE,
+)
 
 
 def _video(video_id: str) -> Video:
@@ -23,345 +27,57 @@ def _video(video_id: str) -> Video:
     )
 
 
-def _served_file(tmp_path: Path, name: str = "video.mp4") -> Path:
-    """Create the temp directory tree a finished download would return."""
-    directory = tmp_path / "download"
-    directory.mkdir(exist_ok=True)
-    served = directory / name
-    served.write_bytes(MP4_BYTES)
-    return served
-
-
-@pytest.mark.asyncio
-async def test_unknown_video_returns_404(client: AsyncClient) -> None:
-    response = await client.get("/api/videos/nosuchvideo/video.mp4")
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "NOT_FOUND"
-
-
-@pytest.mark.asyncio
-async def test_returns_mp4_attachment_for_stored_video(
-    client: AsyncClient,
-    db_session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    db_session.add(_video("vid123"))
-    await db_session.flush()
-    served = _served_file(tmp_path)
-    directory = served.parent
-
-    async def fake_download(
-        youtube_video_id: str,
-        *,
-        start_seconds: int | None = None,
-        end_seconds: int | None = None,
-        height: int | None = None,
-    ) -> Path:
-        return served
-
-    monkeypatch.setattr("app.api.routes.download_video_file", fake_download)
-
-    response = await client.get("/api/videos/vid123/video.mp4")
-
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "video/mp4"
-    assert response.headers["content-disposition"] == 'attachment; filename="video-vid123.mp4"'
-    assert response.content == MP4_BYTES
-    assert not directory.exists()
-
-
-@pytest.mark.asyncio
-async def test_returns_503_when_tooling_is_missing(
-    client: AsyncClient,
-    db_session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_session.add(_video("vid503"))
-    await db_session.flush()
-    monkeypatch.setattr("app.services.video_download.shutil.which", lambda name: None)
-    monkeypatch.setattr("app.services.video_download._bundled_ffmpeg", lambda: None)
-
-    response = await client.get("/api/videos/vid503/video.mp4")
-
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "SERVICE_UNAVAILABLE"
-
-
-@pytest.mark.asyncio
-async def test_returns_502_when_the_download_fails(
-    client: AsyncClient,
-    db_session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_session.add(_video("vid502"))
-    await db_session.flush()
-
-    async def failing_run(command: list[str]) -> tuple[int, bytes]:
-        return 1, b"ERROR: Video unavailable"
-
-    monkeypatch.setattr("app.services.video_download._run_yt_dlp", failing_run)
-    monkeypatch.setattr("app.services.video_download._RETRY_DELAY_SECONDS", 0)
-
-    response = await client.get("/api/videos/vid502/video.mp4")
-
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "EXTERNAL_SERVICE_ERROR"
-
-
-class TestDownloadRange:
-    """The start/end query parameters that pick a section of the video."""
-
-    @staticmethod
-    def _record_download(monkeypatch: pytest.MonkeyPatch, served: Path) -> list[dict[str, object]]:
-        calls: list[dict[str, object]] = []
-
-        async def fake_download(youtube_video_id: str, **kwargs: object) -> Path:
-            calls.append({"youtube_video_id": youtube_video_id, **kwargs})
-            return served
-
-        monkeypatch.setattr("app.api.routes.download_video_file", fake_download)
-        return calls
-
-    async def test_returns_the_requested_section_with_a_range_filename(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        db_session.add(_video("vidrange"))
-        await db_session.flush()
-        calls = self._record_download(monkeypatch, _served_file(tmp_path))
-
-        response = await client.get("/api/videos/vidrange/video.mp4?start=30&end=90")
-
-        assert response.status_code == 200
-        assert (
-            response.headers["content-disposition"]
-            == 'attachment; filename="video-vidrange-30-90.mp4"'
-        )
-        assert calls == [
-            {
-                "youtube_video_id": "vidrange",
-                "start_seconds": 30,
-                "end_seconds": 90,
-                "height": None,
-            }
-        ]
-
-    async def test_leaves_the_end_open_when_only_start_is_given(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        db_session.add(_video("vidopen"))
-        await db_session.flush()
-        calls = self._record_download(monkeypatch, _served_file(tmp_path))
-
-        response = await client.get("/api/videos/vidopen/video.mp4?start=30")
-
-        assert response.status_code == 200
-        assert (
-            response.headers["content-disposition"]
-            == 'attachment; filename="video-vidopen-30-end.mp4"'
-        )
-        assert calls == [
-            {
-                "youtube_video_id": "vidopen",
-                "start_seconds": 30,
-                "end_seconds": None,
-                "height": None,
-            }
-        ]
-
-    async def test_truncates_fractional_seconds_to_whole_ones(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        db_session.add(_video("vidfraction"))
-        await db_session.flush()
-        calls = self._record_download(monkeypatch, _served_file(tmp_path))
-
-        response = await client.get("/api/videos/vidfraction/video.mp4?start=17.533")
-
-        assert response.status_code == 200
-        assert (
-            response.headers["content-disposition"]
-            == 'attachment; filename="video-vidfraction-17-end.mp4"'
-        )
-        assert calls == [
-            {
-                "youtube_video_id": "vidfraction",
-                "start_seconds": 17,
-                "end_seconds": None,
-                "height": None,
-            }
-        ]
-
-    async def test_clamps_an_end_beyond_the_video_duration(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        db_session.add(_video("vidclamp"))
-        await db_session.flush()
-        calls = self._record_download(monkeypatch, _served_file(tmp_path))
-
-        response = await client.get("/api/videos/vidclamp/video.mp4?start=30&end=500")
-
-        assert response.status_code == 200
-        assert (
-            response.headers["content-disposition"]
-            == 'attachment; filename="video-vidclamp-30-100.mp4"'
-        )
-        assert calls == [
-            {
-                "youtube_video_id": "vidclamp",
-                "start_seconds": 30,
-                "end_seconds": 100,
-                "height": None,
-            }
-        ]
-
-    @pytest.mark.parametrize(
-        ("query", "field"),
-        [
-            ("?end=90", "end"),
-            ("?start=90&end=30", "end"),
-            ("?start=17.5&end=17.9", "end"),
-            ("?start=100", "start"),
-            ("?start=500", "start"),
-        ],
+def _record_dispatches(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list[str]]]:
+    """Capture worker task dispatches instead of publishing them."""
+    sent: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        celery_app,
+        "send_task",
+        lambda name, args=None, **kwargs: sent.append((name, args)),
     )
-    async def test_rejects_an_impossible_range_before_downloading(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        query: str,
-        field: str,
-    ) -> None:
-        db_session.add(_video("vidbad"))
-        await db_session.flush()
-        calls = self._record_download(monkeypatch, _served_file(tmp_path))
-
-        response = await client.get(f"/api/videos/vidbad/video.mp4{query}")
-
-        assert response.status_code == 422
-        error = response.json()["error"]
-        assert error["code"] == "VALIDATION_ERROR"
-        assert error["details"]["field"] == field
-        assert calls == []
-
-    async def test_rejects_a_negative_start_at_the_boundary(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
-        db_session.add(_video("vidnegative"))
-        await db_session.flush()
-
-        response = await client.get("/api/videos/vidnegative/video.mp4?start=-5")
-
-        assert response.status_code == 422
+    return sent
 
 
-class TestDownloadQuality:
-    """The height query parameter that caps the download quality."""
+class BlobRecorder:
+    """Async blob deleter that records calls and can be made to fail."""
 
-    @staticmethod
-    def _record_download(monkeypatch: pytest.MonkeyPatch, served: Path) -> list[dict[str, object]]:
-        calls: list[dict[str, object]] = []
+    def __init__(self, fail: bool = False) -> None:
+        self.urls: list[str] = []
+        self.fail = fail
 
-        async def fake_download(youtube_video_id: str, **kwargs: object) -> Path:
-            calls.append({"youtube_video_id": youtube_video_id, **kwargs})
-            return served
+    async def __call__(self, blob_url: str) -> None:
+        self.urls.append(blob_url)
+        if self.fail:
+            raise RuntimeError("blob store is down")
 
-        monkeypatch.setattr("app.api.routes.download_video_file", fake_download)
-        return calls
 
-    async def test_returns_the_requested_quality_with_a_quality_filename(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        db_session.add(_video("vidquality"))
-        await db_session.flush()
-        calls = self._record_download(monkeypatch, _served_file(tmp_path))
-
-        response = await client.get("/api/videos/vidquality/video.mp4?height=720")
-
-        assert response.status_code == 200
-        assert (
-            response.headers["content-disposition"]
-            == 'attachment; filename="video-vidquality-720p.mp4"'
-        )
-        assert calls == [
-            {
-                "youtube_video_id": "vidquality",
-                "start_seconds": None,
-                "end_seconds": None,
-                "height": 720,
-            }
-        ]
-
-    async def test_orders_quality_before_the_range_in_the_filename(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        db_session.add(_video("vidboth"))
-        await db_session.flush()
-        calls = self._record_download(monkeypatch, _served_file(tmp_path))
-
-        response = await client.get("/api/videos/vidboth/video.mp4?start=30&end=90&height=360")
-
-        assert response.status_code == 200
-        assert (
-            response.headers["content-disposition"]
-            == 'attachment; filename="video-vidboth-360p-30-90.mp4"'
-        )
-        assert calls == [
-            {"youtube_video_id": "vidboth", "start_seconds": 30, "end_seconds": 90, "height": 360}
-        ]
-
-    @pytest.mark.parametrize("query", ["?height=100", "?height=1440"])
-    async def test_rejects_a_height_off_the_ladder_before_downloading(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        query: str,
-    ) -> None:
-        db_session.add(_video("vidbadquality"))
-        await db_session.flush()
-        calls = self._record_download(monkeypatch, _served_file(tmp_path))
-
-        response = await client.get(f"/api/videos/vidbadquality/video.mp4{query}")
-
-        assert response.status_code == 422
-        assert calls == []
+async def _seed_download(
+    db_session: AsyncSession,
+    video: Video,
+    *,
+    status: str = STATUS_PENDING,
+    blob_url: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    height: int | None = None,
+) -> VideoDownload:
+    """Store a download row directly, bypassing the queue route."""
+    download = VideoDownload(
+        video_id=video.id,
+        status=status,
+        blob_url=blob_url,
+        start_seconds=start,
+        end_seconds=end,
+        height=height,
+    )
+    db_session.add(download)
+    await db_session.flush()
+    await db_session.refresh(download)
+    return download
 
 
 class TestVideoFormats:
-    """The formats endpoint that lists the downloadable heights."""
-
-    @staticmethod
-    def _payload(heights: list[int]) -> bytes:
-        formats = [{"vcodec": "avc1.640032", "height": h} for h in heights]
-        return json.dumps({"formats": formats}).encode()
+    """The formats endpoint, served from the worker-probed cache."""
 
     async def test_unknown_video_returns_404(self, client: AsyncClient) -> None:
         response = await client.get("/api/videos/nosuchvideo/formats")
@@ -369,56 +85,323 @@ class TestVideoFormats:
         assert response.status_code == 404
         assert response.json()["error"]["code"] == "NOT_FOUND"
 
-    async def test_lists_the_probed_heights_tallest_first(
+    async def test_serves_a_cached_ladder_without_dispatching(
         self,
         client: AsyncClient,
         db_session: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_session.add(_video("vidformats"))
+        video = _video("vidformats")
+        video.available_heights = [1080, 720]
+        video.formats_refreshed_at = datetime.now(UTC)
+        db_session.add(video)
         await db_session.flush()
-
-        async def fake_probe(command: list[str]) -> tuple[int, bytes, bytes]:
-            return 0, self._payload([1080, 720]), b""
-
-        monkeypatch.setattr("app.services.video_download._run_probe", fake_probe)
+        sent = _record_dispatches(monkeypatch)
 
         response = await client.get("/api/videos/vidformats/formats")
 
         assert response.status_code == 200
         assert response.json() == {"heights": [1080, 720]}
+        assert sent == []
 
-    async def test_returns_502_when_the_probe_fails(
+    async def test_queues_a_probe_on_a_miss(
         self,
         client: AsyncClient,
         db_session: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_session.add(_video("vidprobe502"))
+        db_session.add(_video("vidprobe"))
         await db_session.flush()
+        sent = _record_dispatches(monkeypatch)
+        monkeypatch.setattr("app.services.video_downloads.FORMATS_WAIT_SECONDS", 0)
 
-        async def failing_probe(command: list[str]) -> tuple[int, bytes, bytes]:
-            return 1, b"", b"ERROR: Video unavailable"
+        response = await client.get("/api/videos/vidprobe/formats")
 
-        monkeypatch.setattr("app.services.video_download._run_probe", failing_probe)
+        assert response.status_code == 200
+        assert response.json() == {"heights": []}
+        assert sent == [
+            (
+                "app.tasks.formats.probe_video_formats",
+                ["vidprobe", "https://www.youtube.com/watch?v=vidprobe"],
+            )
+        ]
 
-        response = await client.get("/api/videos/vidprobe502/formats")
-
-        assert response.status_code == 502
-        assert response.json()["error"]["code"] == "EXTERNAL_SERVICE_ERROR"
-
-    async def test_returns_503_when_tooling_is_missing(
+    async def test_serves_a_stale_ladder_and_queues_a_refresh(
         self,
         client: AsyncClient,
         db_session: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_session.add(_video("vidprobe503"))
+        video = _video("vidstale")
+        video.available_heights = [720]
+        video.formats_refreshed_at = datetime.now(UTC) - timedelta(days=2)
+        db_session.add(video)
         await db_session.flush()
-        monkeypatch.setattr("app.services.video_download.shutil.which", lambda name: None)
-        monkeypatch.setattr("app.services.video_download._bundled_ffmpeg", lambda: None)
+        sent = _record_dispatches(monkeypatch)
 
-        response = await client.get("/api/videos/vidprobe503/formats")
+        response = await client.get("/api/videos/vidstale/formats")
 
-        assert response.status_code == 503
-        assert response.json()["error"]["code"] == "SERVICE_UNAVAILABLE"
+        assert response.status_code == 200
+        assert response.json() == {"heights": [720]}
+        assert sent == [
+            (
+                "app.tasks.formats.probe_video_formats",
+                ["vidstale", "https://www.youtube.com/watch?v=vidstale"],
+            )
+        ]
+
+
+class TestDownloadCreate:
+    """POST /api/videos/{youtube_video_id}/downloads."""
+
+    async def test_queues_a_download_for_the_worker(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_session.add(_video("vidqueue"))
+        await db_session.flush()
+        sent = _record_dispatches(monkeypatch)
+
+        response = await client.post("/api/videos/vidqueue/downloads")
+
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "pending"
+        assert sent == [("app.tasks.downloads.download_video", [body["id"]])]
+
+    async def test_records_the_requested_section_and_quality(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_session.add(_video("vidcreate"))
+        await db_session.flush()
+        _record_dispatches(monkeypatch)
+
+        created = await client.post(
+            "/api/videos/vidcreate/downloads",
+            json={"start": 30, "end": 500, "height": 360},
+        )
+        download_id = created.json()["id"]
+
+        response = await client.get(f"/api/videos/vidcreate/downloads/{download_id}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "pending"
+        assert body["url"] is None
+        assert body["filename"] == "video-vidcreate-360p-30-100.mp4"
+
+    async def test_unknown_video_returns_404(self, client: AsyncClient) -> None:
+        response = await client.post("/api/videos/nosuchvideo/downloads")
+
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "NOT_FOUND"
+
+    async def test_rejects_an_end_without_a_start(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        db_session.add(_video("viddomainbad"))
+        await db_session.flush()
+
+        response = await client.post("/api/videos/viddomainbad/downloads", json={"end": 90})
+
+        assert response.status_code == 422
+        error = response.json()["error"]
+        assert error["code"] == "VALIDATION_ERROR"
+        assert error["details"]["field"] == "end"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [{"height": 100}, {"height": 1440}, {"start": -5}],
+    )
+    async def test_rejects_requests_off_the_contract(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        payload: dict[str, int],
+    ) -> None:
+        db_session.add(_video("vidboundarybad"))
+        await db_session.flush()
+
+        response = await client.post("/api/videos/vidboundarybad/downloads", json=payload)
+
+        assert response.status_code == 422
+
+
+class TestDownloadStatus:
+    """GET /api/videos/{youtube_video_id}/downloads/{download_id}."""
+
+    async def test_unknown_download_returns_404(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        db_session.add(_video("vidstatus404"))
+        await db_session.flush()
+
+        response = await client.get(
+            "/api/videos/vidstatus404/downloads/00000000-0000-0000-0000-000000000000"
+        )
+
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "NOT_FOUND"
+
+    async def test_a_download_does_not_resolve_under_another_video(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        video = _video("vidowner")
+        other = _video("vidother")
+        db_session.add_all([video, other])
+        await db_session.flush()
+        download = await _seed_download(db_session, video)
+
+        response = await client.get(f"/api/videos/vidother/downloads/{download.id}")
+
+        assert response.status_code == 404
+
+    async def test_reports_the_blob_url_while_ready(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        video = _video("vidready")
+        db_session.add(video)
+        await db_session.flush()
+        download = await _seed_download(
+            db_session, video, status=STATUS_READY, blob_url="https://blob/file"
+        )
+
+        response = await client.get(f"/api/videos/vidready/downloads/{download.id}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ready"
+        assert body["url"] == "https://blob/file"
+
+    async def test_a_non_uuid_id_is_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        db_session.add(_video("viduuid"))
+        await db_session.flush()
+
+        response = await client.get("/api/videos/viduuid/downloads/not-a-uuid")
+
+        assert response.status_code == 422
+
+
+class TestDownloadConsume:
+    """POST /api/videos/{youtube_video_id}/downloads/{download_id}/consume."""
+
+    async def test_deletes_the_blob_and_marks_consumed(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        video = _video("vidconsume")
+        db_session.add(video)
+        await db_session.flush()
+        download = await _seed_download(
+            db_session, video, status=STATUS_READY, blob_url="https://blob/file"
+        )
+        blob = BlobRecorder()
+        monkeypatch.setattr("app.services.video_downloads.delete_blob_url", blob)
+
+        response = await client.post(f"/api/videos/vidconsume/downloads/{download.id}/consume")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "consumed"
+        assert body["url"] is None
+        assert blob.urls == ["https://blob/file"]
+
+    async def test_is_idempotent(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        video = _video("vidtwice")
+        db_session.add(video)
+        await db_session.flush()
+        download = await _seed_download(
+            db_session, video, status=STATUS_READY, blob_url="https://blob/file"
+        )
+        blob = BlobRecorder()
+        monkeypatch.setattr("app.services.video_downloads.delete_blob_url", blob)
+
+        await client.post(f"/api/videos/vidtwice/downloads/{download.id}/consume")
+        response = await client.post(f"/api/videos/vidtwice/downloads/{download.id}/consume")
+
+        assert response.json()["status"] == "consumed"
+        assert blob.urls == ["https://blob/file"]
+
+    async def test_survives_a_blob_delete_failure(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        video = _video("vidblobdown")
+        db_session.add(video)
+        await db_session.flush()
+        download = await _seed_download(
+            db_session, video, status=STATUS_READY, blob_url="https://blob/file"
+        )
+        monkeypatch.setattr("app.services.video_downloads.delete_blob_url", BlobRecorder(fail=True))
+
+        response = await client.post(f"/api/videos/vidblobdown/downloads/{download.id}/consume")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "consumed"
+
+    async def test_a_download_without_a_blob_is_still_consumed(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        video = _video("vidnoblob")
+        db_session.add(video)
+        await db_session.flush()
+        download = await _seed_download(db_session, video)
+        blob = BlobRecorder()
+        monkeypatch.setattr("app.services.video_downloads.delete_blob_url", blob)
+
+        response = await client.post(f"/api/videos/vidnoblob/downloads/{download.id}/consume")
+
+        assert response.json()["status"] == "consumed"
+        assert blob.urls == []
+
+
+class TestDownloadSweep:
+    """The retention sweep that runs on every create."""
+
+    async def test_create_retires_stale_and_expired_rows(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        video = _video("vidsweep")
+        db_session.add(video)
+        await db_session.flush()
+        stale = await _seed_download(db_session, video)
+        expired = await _seed_download(
+            db_session, video, status=STATUS_CONSUMED, blob_url="https://blob/old"
+        )
+        stale.updated_at = datetime.now(UTC) - timedelta(minutes=31)
+        expired.updated_at = datetime.now(UTC) - timedelta(days=2)
+        await db_session.flush()
+        blob = BlobRecorder()
+        monkeypatch.setattr("app.services.video_downloads.delete_blob_url", blob)
+        _record_dispatches(monkeypatch)
+
+        response = await client.post("/api/videos/vidsweep/downloads")
+
+        assert response.status_code == 202
+        await db_session.refresh(stale)
+        assert stale.status == "failed"
+        assert stale.error == SWEEP_FAILURE_MESSAGE
+        assert await db_session.get(VideoDownload, expired.id) is None
+        assert blob.urls == ["https://blob/old"]

@@ -125,6 +125,17 @@ class VideoRepository:
         logger.info("Updated video transcript", video_id=video_id)
         return video
 
+    async def update_available_heights(self, video_id: UUID, heights: list[int]) -> Video:
+        """Cache the H.264 quality ladder the worker probed for a video."""
+        video = await self.session.get(Video, video_id)
+        if not video:
+            raise ValueError(f"Video {video_id} not found")
+        video.available_heights = heights
+        video.formats_refreshed_at = func.now()
+        await self.session.flush()
+        logger.info("Updated video format heights", video_id=video_id, heights=heights)
+        return video
+
     async def has_speech_text(self, video_id: UUID) -> bool:
         """True when the video's stored transcript contains real speech."""
         result = await self.session.execute(select(Video.transcript).where(Video.id == video_id))

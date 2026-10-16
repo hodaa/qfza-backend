@@ -10,6 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 _EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
+#: Bounds of the H.264 download ladder the API accepts. Below the floor no
+#: useful picture remains; above the ceiling YouTube serves only VP9/AV1,
+#: which Apple players cannot decode as video.
+MIN_VIDEO_HEIGHT = 144
+MAX_AVC1_HEIGHT = 1080
+
 
 class ContactRequest(BaseModel):
     """Request schema for POST /api/contact."""
@@ -160,6 +166,49 @@ class VideoFormatsResponse(BaseModel):
     )
 
 
+class DownloadCreateRequest(BaseModel):
+    """Request schema for POST /api/videos/{youtube_video_id}/downloads."""
+
+    start: float | None = Field(default=None, ge=0, description="Section start in seconds")
+    end: float | None = Field(default=None, ge=0, description="Section end in seconds")
+    height: int | None = Field(
+        default=None,
+        ge=MIN_VIDEO_HEIGHT,
+        le=MAX_AVC1_HEIGHT,
+        description="Preferred H.264 quality in pixels",
+    )
+
+
+class DownloadCreateResponse(BaseModel):
+    """Response schema for a queued video download."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str = Field(..., description="Lifecycle state; starts as pending")
+
+
+class DownloadStatusResponse(BaseModel):
+    """Response schema for the download status and consume routes."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str = Field(
+        ...,
+        description="pending | processing | ready | failed | consumed",
+    )
+    url: str | None = Field(
+        None,
+        description="Blob URL of the produced file; set only while ready",
+    )
+    error: str | None = Field(None, description="User-safe failure message when failed")
+    filename: str | None = Field(
+        None,
+        description="Filename the client should save the file under",
+    )
+
+
 class StatusResponse(BaseModel):
     """Response schema for GET /api/status/{job_id}."""
 
@@ -286,6 +335,46 @@ class InternalStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     status: str
+
+
+class InternalDownloadResponse(BaseModel):
+    """Response schema for GET /internal/downloads/{download_id}."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    download_id: UUID
+    video_id: UUID
+    youtube_video_id: str
+    youtube_url: str
+    status: str
+    start_seconds: int | None = None
+    end_seconds: int | None = None
+    height: int | None = None
+
+
+class InternalDownloadReadyRequest(BaseModel):
+    """Request schema for POST /internal/downloads/{download_id}/ready."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    blob_url: str = Field(..., min_length=1, description="Public blob URL of the produced file")
+
+
+class InternalDownloadFailRequest(BaseModel):
+    """Request schema for POST /internal/downloads/{download_id}/failed."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    error: str = Field(..., min_length=1, max_length=500, description="User-safe error message")
+
+
+class InternalVideoFormatsRequest(BaseModel):
+    """Request schema for POST /internal/videos/{youtube_video_id}/formats."""
+
+    heights: list[int] = Field(
+        default_factory=list,
+        description="Distinct H.264 heights found, tallest first; empty is a real answer",
+    )
 
 
 class AssemblyWebhookStatus(str, Enum):

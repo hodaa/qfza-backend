@@ -52,6 +52,50 @@ class TestDispatchResumeTranscription:
         ]
 
 
+class TestDispatchVideoDownload:
+    """Tests for publishing offloaded video downloads to the worker queue."""
+
+    def test_sends_worker_task_with_download_id(self, monkeypatch) -> None:
+        sent = []
+        monkeypatch.setattr(
+            messaging.celery_app,
+            "send_task",
+            lambda name, args=None, **kwargs: sent.append((name, args)),
+        )
+
+        messaging.dispatch_video_download(UUID("12345678-1234-5678-1234-567812345678"))
+
+        assert sent == [
+            (
+                "app.tasks.downloads.download_video",
+                ["12345678-1234-5678-1234-567812345678"],
+            )
+        ]
+
+
+class TestDispatchFormatsProbe:
+    """Tests for publishing format probes to the worker queue."""
+
+    def test_sends_worker_task_with_video_id_and_url(self, monkeypatch) -> None:
+        sent = []
+        monkeypatch.setattr(
+            messaging.celery_app,
+            "send_task",
+            lambda name, args=None, **kwargs: sent.append((name, args)),
+        )
+
+        messaging.dispatch_formats_probe(
+            "dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+
+        assert sent == [
+            (
+                "app.tasks.formats.probe_video_formats",
+                ["dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+            )
+        ]
+
+
 class TestCeleryAppConfiguration:
     """Tests for the Celery app configuration."""
 

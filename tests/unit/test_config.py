@@ -183,3 +183,15 @@ class TestPublicSiteUrl:
     def test_rejects_a_value_that_is_not_an_absolute_url(self, bad: str) -> None:
         with pytest.raises(ValidationError, match="PUBLIC_SITE_URL"):
             Settings(_env_file=None, public_site_url=bad)
+
+
+class TestBlobReadWriteToken:
+    """Tests for the Vercel Blob token setting."""
+
+    def test_default_is_empty(self, monkeypatch) -> None:
+        monkeypatch.delenv("BLOB_READ_WRITE_TOKEN", raising=False)
+        assert Settings(_env_file=None).blob_read_write_token == ""
+
+    def test_reads_configured_value_from_env(self, monkeypatch) -> None:
+        monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "tok-1")
+        assert Settings(_env_file=None).blob_read_write_token == "tok-1"

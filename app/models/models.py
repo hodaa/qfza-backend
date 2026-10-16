@@ -36,6 +36,15 @@ class Video(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     language: Mapped[str | None] = mapped_column(String(20), nullable=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    # Downloadable H.264 heights the worker last probed for this video, tallest
+    # first. Null until a probe has run; an empty list is a real answer (no
+    # named H.264 quality) and keeps the picker from re-probing on every view.
+    available_heights: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
+    # When the heights above were probed. Drives the staleness check that
+    # re-probes in the background on a much later view.
+    formats_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     transcript_tsvector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
     transcribed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -172,6 +181,65 @@ class Job(Base):
 
     def __repr__(self) -> str:
         return f"<Job(id={self.id}, video_id={self.video_id}, status={self.status})>"
+
+
+class VideoDownload(Base):
+    """One offloaded video download tracked across the worker round trip.
+
+    The backend never touches the media: it queues the request, the worker
+    produces the MP4 and uploads it to blob storage, and this row carries the
+    blob URL to whichever client polls it. Lives through five states:
+
+    * ``pending`` - queued, the worker has not picked it up
+    * ``processing`` - the worker is downloading/merging/uploading
+    * ``ready`` - the blob URL is set and fetchable
+    * ``failed`` - the worker reported an error (``error`` holds the message)
+    * ``consumed`` - the client downloaded it; the blob was deleted
+
+    ``start_seconds``/``end_seconds``/``height`` mirror what the client asked
+    for (null = whole video / best quality). The row outlives the blob so a
+    late poll gets an honest "consumed" rather than a 404; a retention sweep
+    removes old rows and any blob they still point at.
+    """
+
+    __tablename__ = "video_downloads"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    video_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    start_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    end_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blob_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_video_downloads_video_id", "video_id"),
+        Index("idx_video_downloads_status_updated", "status", "updated_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<VideoDownload(id={self.id}, video_id={self.video_id}, status={self.status})>"
 
 
 class User(Base):

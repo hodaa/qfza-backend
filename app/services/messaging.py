@@ -8,6 +8,8 @@ from celery import Celery
 from app.core.config import get_settings
 
 _WORKER_TASK_NAME = "app.tasks.transcription.download_and_transcribe"
+_DOWNLOAD_TASK_NAME = "app.tasks.downloads.download_video"
+_FORMATS_TASK_NAME = "app.tasks.formats.probe_video_formats"
 
 _settings = get_settings()
 
@@ -67,3 +69,13 @@ def dispatch_resume_transcription(job_id: UUID, resume_token: str, resume_provid
             "resume_provider": resume_provider,
         },
     )
+
+
+def dispatch_video_download(download_id: UUID) -> None:
+    """Publish a video download request to the worker's queue."""
+    celery_app.send_task(_DOWNLOAD_TASK_NAME, args=[str(download_id)])
+
+
+def dispatch_formats_probe(youtube_video_id: str, youtube_url: str) -> None:
+    """Publish a format probe for one video to the worker's queue."""
+    celery_app.send_task(_FORMATS_TASK_NAME, args=[youtube_video_id, youtube_url])

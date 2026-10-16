@@ -90,6 +90,12 @@ class Settings(BaseSettings):
         description="Shared API key for internal worker-to-backend communication",
     )
 
+    # Vercel Blob (download artifact cleanup)
+    blob_read_write_token: str = Field(
+        default="",
+        description="Vercel Blob read-write token, mirrored into the environment for the SDK",
+    )
+
     # External calls
     live_external_calls: Annotated[bool, BeforeValidator(_coerce_bool)] = Field(
         default=False,

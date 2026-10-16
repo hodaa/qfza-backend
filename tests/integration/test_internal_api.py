@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models import Job, Video
+from app.models import Job, Video, VideoDownload
 from app.schemas import JobStatus
 
 settings = get_settings()
@@ -281,3 +281,160 @@ class TestInternalProgress:
             headers=_headers(),
         )
         assert response.status_code == 422
+
+
+class _BlobRecorder:
+    """Async blob deleter that records calls."""
+
+    def __init__(self) -> None:
+        self.urls: list[str] = []
+
+    async def __call__(self, blob_url: str) -> None:
+        self.urls.append(blob_url)
+
+
+async def _seed_download(
+    db_session: AsyncSession,
+    video: Video,
+    *,
+    status: str = "pending",
+    blob_url: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    height: int | None = None,
+) -> VideoDownload:
+    """Store a download row for the worker-facing endpoints."""
+    download = VideoDownload(
+        video_id=video.id,
+        status=status,
+        blob_url=blob_url,
+        start_seconds=start,
+        end_seconds=end,
+        height=height,
+    )
+    db_session.add(download)
+    await db_session.flush()
+    await db_session.refresh(download)
+    return download
+
+
+class TestInternalDownloads:
+    """Tests for the worker-facing download endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_returns_the_worker_payload(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        video, _ = await _create_job_with_video(db_session)
+        download = await _seed_download(db_session, video, start=30, end=90, height=360)
+
+        response = await client.get(f"/internal/downloads/{download.id}", headers=_headers())
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["download_id"] == str(download.id)
+        assert data["video_id"] == str(video.id)
+        assert data["youtube_video_id"] == video.video_id
+        assert data["youtube_url"] == video.youtube_url
+        assert data["status"] == "pending"
+        assert data["start_seconds"] == 30
+        assert data["end_seconds"] == 90
+        assert data["height"] == 360
+
+    @pytest.mark.asyncio
+    async def test_missing_download_returns_404(self, client: AsyncClient) -> None:
+        response = await client.get(
+            "/internal/downloads/00000000-0000-0000-0000-000000000000", headers=_headers()
+        )
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_advance_ready_failed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        video, _ = await _create_job_with_video(db_session)
+        download = await _seed_download(db_session, video)
+
+        advance = await client.post(
+            f"/internal/downloads/{download.id}/advance", headers=_headers()
+        )
+        assert advance.json()["status"] == "processing"
+
+        ready = await client.post(
+            f"/internal/downloads/{download.id}/ready",
+            json={"blob_url": "https://blob/file"},
+            headers=_headers(),
+        )
+        assert ready.json()["status"] == "ready"
+
+        failed = await client.post(
+            f"/internal/downloads/{download.id}/failed",
+            json={"error": "The download failed"},
+            headers=_headers(),
+        )
+        assert failed.json()["status"] == "failed"
+
+        status = await client.get(f"/api/videos/{video.video_id}/downloads/{download.id}")
+        assert status.json()["status"] == "failed"
+        assert status.json()["error"] == "The download failed"
+
+    @pytest.mark.asyncio
+    async def test_ready_for_a_consumed_row_discards_the_new_blob(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        video, _ = await _create_job_with_video(db_session)
+        download = await _seed_download(
+            db_session, video, status="consumed", blob_url="https://blob/old"
+        )
+        blob = _BlobRecorder()
+        monkeypatch.setattr("app.services.video_downloads.delete_blob_url", blob)
+
+        ready = await client.post(
+            f"/internal/downloads/{download.id}/ready",
+            json={"blob_url": "https://blob/late"},
+            headers=_headers(),
+        )
+
+        assert ready.status_code == 200
+        assert ready.json()["status"] == "consumed"
+        assert blob.urls == ["https://blob/late"]
+
+    @pytest.mark.asyncio
+    async def test_download_routes_require_the_key(self, client: AsyncClient) -> None:
+        response = await client.get("/internal/downloads/00000000-0000-0000-0000-000000000000")
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_formats_endpoint_caches_the_ladder(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        video, _ = await _create_job_with_video(db_session)
+
+        stored = await client.post(
+            f"/internal/videos/{video.video_id}/formats",
+            json={"heights": [1080, 720]},
+            headers=_headers(),
+        )
+        assert stored.status_code == 200
+
+        await db_session.refresh(video)
+        assert video.available_heights == [1080, 720]
+        assert video.formats_refreshed_at is not None
+
+        listed = await client.get(f"/api/videos/{video.video_id}/formats")
+        assert listed.json() == {"heights": [1080, 720]}
+
+    @pytest.mark.asyncio
+    async def test_formats_endpoint_404_for_unknown_video(self, client: AsyncClient) -> None:
+        response = await client.post(
+            "/internal/videos/nosuchvideo/formats",
+            json={"heights": []},
+            headers=_headers(),
+        )
+
+        assert response.status_code == 404
