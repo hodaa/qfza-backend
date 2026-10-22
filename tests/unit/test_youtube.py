@@ -3,8 +3,9 @@
 import pytest
 
 from app.core.exceptions import InvalidYouTubeURLError
-from app.services.youtube import (
-    YouTubeVideoInfo,
+from app.sources.base import VideoRef
+from app.sources.youtube import (
+    YouTubeSource,
     extract_video_id,
     is_youtube_url,
     normalize_youtube_url,
@@ -88,22 +89,23 @@ class TestNormalizeYoutubeUrl:
 class TestValidateYouTubeUrl:
     """Tests for validate_youtube_url function."""
 
-    def test_valid_url_returns_video_info(self) -> None:
+    def test_valid_url_returns_video_ref(self) -> None:
         url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         result = validate_youtube_url(url)
-        assert isinstance(result, YouTubeVideoInfo)
-        assert result.video_id == "dQw4w9WgXcQ"
-        assert result.original_url == normalize_youtube_url("dQw4w9WgXcQ")
+        assert isinstance(result, VideoRef)
+        assert result.source == "youtube"
+        assert result.source_id == "dQw4w9WgXcQ"
+        assert result.canonical_url == normalize_youtube_url("dQw4w9WgXcQ")
 
     def test_playlist_params_are_stripped(self) -> None:
         url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123&index=3"
         result = validate_youtube_url(url)
-        assert result.original_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        assert result.canonical_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
     def test_tracking_params_are_stripped(self) -> None:
         url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=abc123&t=30s"
         result = validate_youtube_url(url)
-        assert result.original_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        assert result.canonical_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
     def test_invalid_url_raises_exception(self) -> None:
         url = "https://example.com/video"
@@ -120,3 +122,29 @@ class TestValidateYouTubeUrl:
         url = "https://www.youtube.com/watch"
         with pytest.raises(InvalidYouTubeURLError):
             validate_youtube_url(url)
+
+
+class TestYouTubeSource:
+    """Tests for the YouTube source strategy."""
+
+    def test_name_and_capabilities(self) -> None:
+        source = YouTubeSource()
+        assert source.name == "youtube"
+        assert source.capabilities.qualities is True
+
+    def test_matches_any_youtube_host(self) -> None:
+        source = YouTubeSource()
+        assert source.matches("https://www.youtube.com/watch?v=dQw4w9WgXcQ") is True
+        assert source.matches("https://youtu.be/dQw4w9WgXcQ") is True
+        # A channel page is not a video, but it is still YouTube's to reject.
+        assert source.matches("https://www.youtube.com/channel/UC123") is True
+        assert source.matches("https://drive.google.com/file/d/abc/view") is False
+
+    def test_identify_returns_video_ref(self) -> None:
+        source = YouTubeSource()
+        ref = source.identify("https://youtu.be/dQw4w9WgXcQ")
+        assert ref == VideoRef(
+            source="youtube",
+            source_id="dQw4w9WgXcQ",
+            canonical_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        )

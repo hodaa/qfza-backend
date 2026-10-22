@@ -21,11 +21,14 @@ from app.services.video_downloads import (
     validated_range,
 )
 
+#: A real-shaped YouTube id: the source strategies only claim 11-char ids.
+_VIDEO_ID = "dQw4w9WgXcQ"
 
-def _video(video_id: str = "vid123", duration: int | None = 100) -> Video:
+
+def _video(video_id: str = _VIDEO_ID, duration: int | None = 100) -> Video:
     """Build a transient video row with a stable id."""
     video = Video(
-        youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+        video_url=f"https://www.youtube.com/watch?v={video_id}",
         video_id=video_id,
         title="Test Video",
         duration_seconds=duration,
@@ -271,7 +274,7 @@ class TestCreate:
         video = _video()
         service, repo, _ = _service(video)
 
-        row = await service.create("vid123", start=30.0, end=500.0, height=360)
+        row = await service.create(_VIDEO_ID, start=30.0, end=500.0, height=360)
 
         assert row.status == STATUS_PENDING
         assert row.video_id == video.id
@@ -296,7 +299,7 @@ class TestCreate:
         repo.stale = [stale]
         repo.expired = [expired]
 
-        await service.create("vid123")
+        await service.create(_VIDEO_ID)
 
         assert stale.status == STATUS_FAILED
         assert stale.error == SWEEP_FAILURE_MESSAGE
@@ -309,7 +312,7 @@ class TestCreate:
         service, repo, _ = _service(video)
         repo.fail_sweep = True
 
-        row = await service.create("vid123")
+        row = await service.create(_VIDEO_ID)
 
         assert row.status == STATUS_PENDING
 
@@ -324,7 +327,7 @@ class TestConsume:
         row = _download(video.id, status=STATUS_READY, blob_url="https://blob/file")
         repo.rows[row.id] = row
 
-        result = await service.consume("vid123", row.id)
+        result = await service.consume(_VIDEO_ID, row.id)
 
         assert result.status == STATUS_CONSUMED
         assert result.consumed_at is not None
@@ -337,8 +340,8 @@ class TestConsume:
         row = _download(video.id, status=STATUS_READY, blob_url="https://blob/file")
         repo.rows[row.id] = row
 
-        await service.consume("vid123", row.id)
-        result = await service.consume("vid123", row.id)
+        await service.consume(_VIDEO_ID, row.id)
+        result = await service.consume(_VIDEO_ID, row.id)
 
         assert result.status == STATUS_CONSUMED
         assert blob.urls == ["https://blob/file"]
@@ -350,7 +353,7 @@ class TestConsume:
         row = _download(video.id)
         repo.rows[row.id] = row
 
-        result = await service.consume("vid123", row.id)
+        result = await service.consume(_VIDEO_ID, row.id)
 
         assert result.status == STATUS_CONSUMED
         assert blob.urls == []
@@ -362,7 +365,7 @@ class TestConsume:
         row = _download(video.id, status=STATUS_READY, blob_url="https://blob/file")
         repo.rows[row.id] = row
 
-        result = await service.consume("vid123", row.id)
+        result = await service.consume(_VIDEO_ID, row.id)
 
         assert result.status == STATUS_CONSUMED
         assert blob.urls == ["https://blob/file"]
@@ -476,7 +479,7 @@ class TestFormatsCache:
         video.formats_refreshed_at = datetime.now(UTC)
         calls: list[tuple[str, str]] = []
 
-        heights = await _formats_service(video, dispatch_calls=calls).get_heights("vid123")
+        heights = await _formats_service(video, dispatch_calls=calls).get_heights(_VIDEO_ID)
 
         assert heights == [1080, 720]
         assert calls == []
@@ -488,7 +491,7 @@ class TestFormatsCache:
         video.formats_refreshed_at = datetime.now(UTC)
         calls: list[tuple[str, str]] = []
 
-        heights = await _formats_service(video, dispatch_calls=calls).get_heights("vid123")
+        heights = await _formats_service(video, dispatch_calls=calls).get_heights(_VIDEO_ID)
 
         assert heights == []
         assert calls == []
@@ -500,10 +503,10 @@ class TestFormatsCache:
         video.formats_refreshed_at = datetime.now(UTC) - timedelta(days=2)
         calls: list[tuple[str, str]] = []
 
-        heights = await _formats_service(video, dispatch_calls=calls).get_heights("vid123")
+        heights = await _formats_service(video, dispatch_calls=calls).get_heights(_VIDEO_ID)
 
         assert heights == [720]
-        assert calls == [("vid123", "https://www.youtube.com/watch?v=vid123")]
+        assert calls == [(_VIDEO_ID, f"https://www.youtube.com/watch?v={_VIDEO_ID}")]
 
     @pytest.mark.asyncio
     async def test_a_failing_refresh_dispatch_still_serves_the_ladder(self) -> None:
@@ -511,7 +514,7 @@ class TestFormatsCache:
         video.available_heights = [720]
         video.formats_refreshed_at = datetime.now(UTC) - timedelta(days=2)
 
-        heights = await _formats_service(video, fail_dispatch=True).get_heights("vid123")
+        heights = await _formats_service(video, fail_dispatch=True).get_heights(_VIDEO_ID)
 
         assert heights == [720]
 
@@ -532,10 +535,10 @@ class TestFormatsCache:
         session = FakeSession(on_refresh)
         service = _formats_service(video, dispatch_calls=calls, session=session)
 
-        heights = await service.get_heights("vid123")
+        heights = await service.get_heights(_VIDEO_ID)
 
         assert heights == [720]
-        assert calls == [("vid123", "https://www.youtube.com/watch?v=vid123")]
+        assert calls == [(_VIDEO_ID, f"https://www.youtube.com/watch?v={_VIDEO_ID}")]
         assert session.refreshes == 1
 
     @pytest.mark.asyncio
@@ -548,14 +551,14 @@ class TestFormatsCache:
 
         service = _formats_service(video, session=FakeSession(on_refresh))
 
-        assert await service.get_heights("vid123") == []
+        assert await service.get_heights(_VIDEO_ID) == []
 
     @pytest.mark.asyncio
     async def test_a_miss_times_out_to_an_empty_ladder(self) -> None:
         video = _video()
         session = FakeSession()
 
-        heights = await _formats_service(video, session=session).get_heights("vid123")
+        heights = await _formats_service(video, session=session).get_heights(_VIDEO_ID)
 
         assert heights == []
         assert session.refreshes == 15
@@ -567,5 +570,27 @@ class TestFormatsCache:
 
         service = _formats_service(video, fail_dispatch=True, session=session)
 
-        assert await service.get_heights("vid123") == []
+        assert await service.get_heights(_VIDEO_ID) == []
         assert session.refreshes == 0
+
+    @pytest.mark.asyncio
+    async def test_a_source_without_qualities_answers_empty_without_probing(self) -> None:
+        video = _video()
+        video.video_url = "https://drive.google.com/file/d/1DOoJhC6NHpLSu2nAvaWy3HukVimEyyhE"
+        calls: list[tuple[str, str]] = []
+
+        heights = await _formats_service(video, dispatch_calls=calls).get_heights(_VIDEO_ID)
+
+        assert heights == []
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_unclaimed_stored_url_answers_empty_without_probing(self) -> None:
+        video = _video()
+        video.video_url = "https://example.com/video"
+        calls: list[tuple[str, str]] = []
+
+        heights = await _formats_service(video, dispatch_calls=calls).get_heights(_VIDEO_ID)
+
+        assert heights == []
+        assert calls == []

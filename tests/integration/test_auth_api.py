@@ -137,7 +137,9 @@ async def _register_and_verify(client: AsyncClient, email: str, password: str = 
     return body
 
 
-async def _verify_via_email(client: AsyncClient, sender: CapturingSender, db_session) -> None:  # noqa: ANN001
+async def _verify_via_email(
+    client: AsyncClient, sender: CapturingSender, db_session
+) -> None:  # noqa: ANN001
     """Complete verification using the link that was emailed."""
     link = sender.sent[-1][2]
     token = link.split("token=")[1].split()[0]
@@ -163,7 +165,7 @@ async def _seed_transcribed_video(db_session, video_id: str, title: str):  # noq
     )
 
     video = Video(
-        youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+        video_url=f"https://www.youtube.com/watch?v={video_id}",
         video_id=video_id,
         title=title,
         duration_seconds=100,
@@ -243,7 +245,9 @@ class TestLoginEndpoint:
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "INVALID_CREDENTIALS"
 
-    async def test_unknown_address_is_the_same_401(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_unknown_address_is_the_same_401(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         await self._verified_user(auth_client, sender)
         unknown = await auth_client.post(
             "/api/v1/auth/login",
@@ -265,7 +269,9 @@ class TestLoginEndpoint:
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "EMAIL_UNVERIFIED"
 
-    async def test_three_strikes_lock_the_account(self, account_client, sender) -> None:  # noqa: ANN001
+    async def test_three_strikes_lock_the_account(
+        self, account_client, sender
+    ) -> None:  # noqa: ANN001
         # account_client lifts the per-IP ceiling, so this exercises the
         # per-account rule on its own.
         email = await self._verified_user(account_client, sender)
@@ -319,7 +325,9 @@ class TestForwardedHeaderCannotBypassTheLimiter:
     unreachable - the ceiling would never be reached to trigger it.
     """
 
-    async def test_a_rotating_header_does_not_reset_the_count(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_a_rotating_header_does_not_reset_the_count(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         # Each attempt claims a brand new source address. None is behind a
         # configured proxy, so all of them are the same client.
         for attempt in range(4):
@@ -372,13 +380,17 @@ class TestForwardedHeaderBehindATrustedProxy:
         return auth_settings.model_copy(update={"trusted_proxy_networks": "127.0.0.0/8"})
 
     @pytest_asyncio.fixture
-    async def proxy_client(self, db_session, proxy_settings, sender, google_verifier):  # noqa: ANN001
+    async def proxy_client(
+        self, db_session, proxy_settings, sender, google_verifier
+    ):  # noqa: ANN001
         app = _build_auth_client(db_session, proxy_settings, sender, google_verifier)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as ac:
             yield ac
         app.dependency_overrides.clear()
 
-    async def test_the_client_address_behind_the_proxy_is_used(self, proxy_client, sender) -> None:  # noqa: ANN001
+    async def test_the_client_address_behind_the_proxy_is_used(
+        self, proxy_client, sender
+    ) -> None:  # noqa: ANN001
         # Trusted, so three distinct claimed addresses are three distinct keys
         # and each gets its own budget.
         for address in ("198.51.100.1", "198.51.100.2", "198.51.100.3"):
@@ -425,17 +437,23 @@ class TestSessionCookie:
         assert "Secure" in header
         assert "Path=/" in header
 
-    async def test_cookie_carries_no_domain_attribute(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_cookie_carries_no_domain_attribute(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         response = await self._sign_in(auth_client, sender)
         header = response.headers["set-cookie"]
         # A Domain attribute would let a sibling subdomain read the session.
         assert "Domain=" not in header
 
-    async def test_token_is_also_returned_for_native_clients(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_token_is_also_returned_for_native_clients(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         response = await self._sign_in(auth_client, sender)
         assert response.json()["token"]
 
-    async def test_session_endpoint_reports_the_user(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_session_endpoint_reports_the_user(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         await self._sign_in(auth_client, sender)
         response = await auth_client.get("/api/v1/auth/session")
         assert response.status_code == 200
@@ -443,7 +461,9 @@ class TestSessionCookie:
         assert body["user"]["email"] == "cookie@example.com"
         assert body["csrf_token"] == "csrf-secret-for-tests"
 
-    async def test_session_endpoint_is_401_when_signed_out(self, auth_client) -> None:  # noqa: ANN001
+    async def test_session_endpoint_is_401_when_signed_out(
+        self, auth_client
+    ) -> None:  # noqa: ANN001
         response = await auth_client.get("/api/v1/auth/session")
         assert response.status_code == 401
 
@@ -455,20 +475,26 @@ class TestCsrf:
         email = await TestLoginEndpoint()._verified_user(client, sender, "csrf@example.com")
         await client.post("/api/v1/auth/login", json={"email": email, "password": PASSWORD})
 
-    async def test_logout_without_the_header_is_403(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_logout_without_the_header_is_403(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         await self._sign_in(auth_client, sender)
         response = await auth_client.post("/api/v1/auth/logout")
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "CSRF_FAILED"
 
-    async def test_logout_with_a_wrong_header_is_403(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_logout_with_a_wrong_header_is_403(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         await self._sign_in(auth_client, sender)
         response = await auth_client.post(
             "/api/v1/auth/logout", headers={"X-CSRF-Token": "not-the-secret"}
         )
         assert response.status_code == 403
 
-    async def test_logout_with_the_header_succeeds(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_logout_with_the_header_succeeds(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         await self._sign_in(auth_client, sender)
         response = await auth_client.post(
             "/api/v1/auth/logout", headers={"X-CSRF-Token": "csrf-secret-for-tests"}
@@ -476,7 +502,9 @@ class TestCsrf:
         assert response.status_code == 204
         assert auth_client.cookies.get("jumpto_session") is None
 
-    async def test_history_clear_without_the_header_is_403(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_history_clear_without_the_header_is_403(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         await self._sign_in(auth_client, sender)
         response = await auth_client.delete("/api/v1/history")
         assert response.status_code == 403
@@ -497,7 +525,9 @@ class TestCsrf:
 class TestPasswordResetEndpoint:
     """POST /api/v1/auth/password-reset[/confirm]"""
 
-    async def test_unknown_address_looks_identical(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_unknown_address_looks_identical(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         response = await auth_client.post(
             "/api/v1/auth/password-reset", json={"email": "ghost@example.com"}
         )
@@ -514,7 +544,9 @@ class TestPasswordResetEndpoint:
         assert len(sender.sent) == 1
         assert "reset-password?token=" in sender.sent[0][2]
 
-    async def test_confirming_sets_the_new_password(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_confirming_sets_the_new_password(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         await _register_and_verify(auth_client, "reset2@example.com")
         await _verify_via_email(auth_client, sender, None)
         sender.sent.clear()
@@ -579,13 +611,17 @@ class TestHistoryEndpoint:
     async def test_history_requires_a_session(self, auth_client) -> None:  # noqa: ANN001
         assert (await auth_client.get("/api/v1/history")).status_code == 401
 
-    async def test_empty_history_is_an_empty_list(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_empty_history_is_an_empty_list(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         await self._sign_in(auth_client, sender)
         response = await auth_client.get("/api/v1/history")
         assert response.status_code == 200
         assert response.json()["entries"] == []
 
-    async def test_entries_are_listed_newest_first(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+    async def test_entries_are_listed_newest_first(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
         from app.models import SearchHistory, User
 
         await self._sign_in(auth_client, sender)
@@ -643,9 +679,7 @@ class TestHistoryEndpoint:
             match_results=[{"progress_seconds": s, "timestamp": f"00:{s:02d}"} for s in every],
         )
         stored = await db_session.scalar(
-            __import__("sqlalchemy").select(SearchHistory).where(
-                SearchHistory.video_id == "vmulti"
-            )
+            __import__("sqlalchemy").select(SearchHistory).where(SearchHistory.video_id == "vmulti")
         )
         assert stored.match_timestamps == every
         assert stored.match_results is not None
@@ -658,7 +692,9 @@ class TestHistoryEndpoint:
             {"progress_seconds": s, "timestamp": f"00:{s:02d}"} for s in every
         ]
 
-    async def test_entry_without_matches_reports_null(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+    async def test_entry_without_matches_reports_null(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
         """A not_found entry keeps nulls, so the client can tell 'no match'
         from 'recorded before this column existed' — both simply have no list."""
         from app.models import SearchHistory, User
@@ -701,7 +737,7 @@ class TestHistoryEndpoint:
 
         await self._sign_in(auth_client, sender)
         video = Video(
-            youtube_url="https://www.youtube.com/watch?v=foundvid001",
+            video_url="https://www.youtube.com/watch?v=foundvid001",
             video_id="foundvid001",
             title="Said it twice",
             language="en",
@@ -712,7 +748,14 @@ class TestHistoryEndpoint:
         # The phrase appears twice, so a route that saved only the leading hit
         # cannot pass this.
         for word_index, (word, start) in enumerate(
-            [("say", 5.0), ("it", 5.4), ("twice", 5.9), ("say", 700.0), ("it", 700.4), ("twice", 700.9)]
+            [
+                ("say", 5.0),
+                ("it", 5.4),
+                ("twice", 5.9),
+                ("say", 700.0),
+                ("it", 700.4),
+                ("twice", 700.9),
+            ]
         ):
             db_session.add(
                 TranscriptWord(
@@ -727,7 +770,7 @@ class TestHistoryEndpoint:
 
         response = await auth_client.post(
             "/api/search",
-            json={"youtube_url": video.youtube_url, "keyword": "say it twice"},
+            json={"youtube_url": video.video_url, "keyword": "say it twice"},
             headers={"X-CSRF-Token": "csrf-secret-for-tests"},
         )
         assert response.status_code == 200, response.text
@@ -755,7 +798,7 @@ class TestHistoryEndpoint:
 
         await self._sign_in(auth_client, sender)
         video = Video(
-            youtube_url="https://www.youtube.com/watch?v=missvid0001",
+            video_url="https://www.youtube.com/watch?v=missvid0001",
             video_id="missvid0001",
             title="Never said it",
             language="en",
@@ -772,7 +815,7 @@ class TestHistoryEndpoint:
 
         response = await auth_client.post(
             "/api/search",
-            json={"youtube_url": video.youtube_url, "keyword": "never said it"},
+            json={"youtube_url": video.video_url, "keyword": "never said it"},
             headers={"X-CSRF-Token": "csrf-secret-for-tests"},
         )
         assert response.json()["status"] == "not_found"
@@ -782,7 +825,9 @@ class TestHistoryEndpoint:
         assert entry["progress_seconds"] is None
         assert entry["match_results"] is None
 
-    async def test_entries_never_leak_across_users(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+    async def test_entries_never_leak_across_users(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
         from sqlalchemy import select
 
         from app.models import SearchHistory, User
@@ -802,7 +847,9 @@ class TestHistoryEndpoint:
         response = await auth_client.get("/api/v1/history")
         assert response.json()["entries"] == []
 
-    async def test_deleting_an_entry_requires_csrf(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+    async def test_deleting_an_entry_requires_csrf(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
         from sqlalchemy import select
 
         from app.models import SearchHistory, User
@@ -816,7 +863,9 @@ class TestHistoryEndpoint:
 
         assert (await auth_client.delete(f"/api/v1/history/{entry.id}")).status_code == 403
 
-    async def test_another_users_entry_is_404(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+    async def test_another_users_entry_is_404(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
         from app.models import SearchHistory, User
 
         await self._sign_in(auth_client, sender, "thief@example.com")
@@ -893,7 +942,7 @@ class TestHistoryEndpoint:
         user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
         db_session.add(
             Video(
-                youtube_url="https://www.youtube.com/watch?v=abc123",
+                video_url="https://www.youtube.com/watch?v=abc123",
                 video_id="abc123",
                 title="Buy a brain at any price",
             )
@@ -926,7 +975,7 @@ class TestHistoryEndpoint:
         user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
         db_session.add(
             Video(
-                youtube_url="https://www.youtube.com/watch?v=abc123",
+                video_url="https://www.youtube.com/watch?v=abc123",
                 video_id="abc123",
                 title="A completely different name now",
             )
@@ -965,7 +1014,7 @@ class TestHistoryEndpoint:
         await self._sign_in(auth_client, sender)
         user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
         video = Video(
-            youtube_url="https://www.youtube.com/watch?v=pos123",
+            video_url="https://www.youtube.com/watch?v=pos123",
             video_id="pos123",
             title="Buy a brain at any price",
             transcribed_at=datetime.now(UTC),
@@ -1028,7 +1077,7 @@ class TestHistoryEndpoint:
         await self._sign_in(auth_client, sender)
         user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
         video = Video(
-            youtube_url="https://www.youtube.com/watch?v=pos123",
+            video_url="https://www.youtube.com/watch?v=pos123",
             video_id="pos123",
             title="Buy a brain at any price",
             transcribed_at=datetime.now(UTC),
@@ -1041,9 +1090,7 @@ class TestHistoryEndpoint:
             )
         )
         db_session.add(
-            SearchHistory(
-                user_id=user.id, video_id="pos123", keyword="brain", status="processing"
-            )
+            SearchHistory(user_id=user.id, video_id="pos123", keyword="brain", status="processing")
         )
         await db_session.flush()
 
@@ -1072,7 +1119,7 @@ class TestHistoryEndpoint:
         await self._sign_in(auth_client, sender)
         user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
         video = Video(
-            youtube_url="https://www.youtube.com/watch?v=pos123",
+            video_url="https://www.youtube.com/watch?v=pos123",
             video_id="pos123",
             title="Buy a brain at any price",
             transcribed_at=datetime.now(UTC),
@@ -1117,15 +1164,13 @@ class TestHistoryEndpoint:
         user = await db_session.scalar(select(User).where(User.email == "hist@example.com"))
         db_session.add(
             Video(
-                youtube_url="https://www.youtube.com/watch?v=pos123",
+                video_url="https://www.youtube.com/watch?v=pos123",
                 video_id="pos123",
                 title="Never finished",
             )
         )
         db_session.add(
-            SearchHistory(
-                user_id=user.id, video_id="pos123", keyword="brain", status="processing"
-            )
+            SearchHistory(user_id=user.id, video_id="pos123", keyword="brain", status="processing")
         )
         await db_session.flush()
 
@@ -1134,7 +1179,7 @@ class TestHistoryEndpoint:
     async def test_a_search_that_matched_nothing_is_still_listed(
         self, auth_client, sender, db_session
     ) -> None:  # noqa: ANN001
-        """"No results" must not mean "hidden": a real miss is a real answer.
+        """ "No results" must not mean "hidden": a real miss is a real answer.
 
         A search that ran and found nothing is recorded the same shape as one
         still waiting on its transcript - no match list either. If hiding
@@ -1272,7 +1317,9 @@ class TestHistoryEndpoint:
 class TestBearerAuthentication:
     """A native client authenticates with a header instead of a cookie."""
 
-    async def test_bearer_token_authenticates_history(self, auth_client, sender) -> None:  # noqa: ANN001
+    async def test_bearer_token_authenticates_history(
+        self, auth_client, sender
+    ) -> None:  # noqa: ANN001
         email = await TestLoginEndpoint()._verified_user(auth_client, sender, "native@example.com")
         login = await auth_client.post(
             "/api/v1/auth/login", json={"email": email, "password": PASSWORD}
@@ -1328,7 +1375,9 @@ class TestSearchRecordsHistory:
             headers={"X-Qfza-Source": "unit-test", "Accept-Language": "ar-SA,ar;q=0.9"},
         )
 
-    async def test_anonymous_search_records_nothing(self, auth_client, db_session) -> None:  # noqa: ANN001
+    async def test_anonymous_search_records_nothing(
+        self, auth_client, db_session
+    ) -> None:  # noqa: ANN001
         from sqlalchemy import func, select
 
         from app.models import SearchHistory
@@ -1339,7 +1388,38 @@ class TestSearchRecordsHistory:
         count = await db_session.scalar(select(func.count()).select_from(SearchHistory))
         assert count == 0
 
-    async def test_signed_in_search_is_recorded(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+    async def test_anonymous_search_remembers_the_keyword_on_the_video(  # noqa: ANN001
+        self, auth_client, db_session
+    ) -> None:
+        from sqlalchemy import select
+
+        from app.models import Video
+
+        response = await self._search(auth_client, "still anonymous")
+        assert response.status_code in (200, 202)
+
+        video = await db_session.scalar(select(Video).where(Video.video_id == "dQw4w9WgXcQ"))
+        assert video is not None
+        assert video.last_keyword == "still anonymous"
+
+    async def test_signed_in_search_does_not_touch_the_video_keyword(  # noqa: ANN001
+        self, auth_client, sender, db_session
+    ) -> None:
+        from sqlalchemy import select
+
+        from app.models import Video
+
+        await self._sign_in(auth_client, sender, "ownersearch@example.com")
+        response = await self._search(auth_client, "account keyword")
+        assert response.status_code in (200, 202)
+
+        video = await db_session.scalar(select(Video).where(Video.video_id == "dQw4w9WgXcQ"))
+        assert video is not None
+        assert video.last_keyword is None
+
+    async def test_signed_in_search_is_recorded(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
         from sqlalchemy import select
 
         from app.models import SearchHistory, User
@@ -1408,12 +1488,16 @@ class TestSearchRecordsHistory:
         )
         assert rows == []
 
-    async def test_a_bogus_cookie_does_not_break_an_anonymous_search(self, auth_client) -> None:  # noqa: ANN001
+    async def test_a_bogus_cookie_does_not_break_an_anonymous_search(
+        self, auth_client
+    ) -> None:  # noqa: ANN001
         auth_client.cookies.set("jumpto_session", "not-a-real-token", domain="test")
         response = await self._search(auth_client)
         assert response.status_code in (200, 202)
 
-    async def test_a_hit_snapshots_where_it_matched(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+    async def test_a_hit_snapshots_where_it_matched(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
         """A saved keyword reopens where it was found.
 
         The history page promises that clicking a saved search lands on the
@@ -1431,7 +1515,7 @@ class TestSearchRecordsHistory:
             db_session, "aB3dEfGhIj1", "Typing without looking down"
         )
         response = await auth_client.post(
-            "/api/search", json={"youtube_url": video.youtube_url, "keyword": "hello world"}
+            "/api/search", json={"youtube_url": video.video_url, "keyword": "hello world"}
         )
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "found"
@@ -1446,7 +1530,9 @@ class TestSearchRecordsHistory:
         assert row.video_title == "Typing without looking down"
         assert row.progress_seconds == int(response.json()["results"][0]["progress_seconds"])
 
-    async def test_a_miss_records_no_position(self, auth_client, sender, db_session) -> None:  # noqa: ANN001
+    async def test_a_miss_records_no_position(
+        self, auth_client, sender, db_session
+    ) -> None:  # noqa: ANN001
         """A search that found nothing has nothing to replay to.
 
         Recording 0 would claim the quote sat at the very start of the video,
@@ -1461,7 +1547,7 @@ class TestSearchRecordsHistory:
         video = await _seed_transcribed_video(db_session, "kL4mNoPqRs2", "Nothing to find here")
         response = await auth_client.post(
             "/api/search",
-            json={"youtube_url": video.youtube_url, "keyword": "absentwordabsentword"},
+            json={"youtube_url": video.video_url, "keyword": "absentwordabsentword"},
         )
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "not_found"
@@ -1495,7 +1581,7 @@ class TestSearchRecordsHistory:
         await self._sign_in(auth_client, sender, "twice@example.com")
         video = await _seed_transcribed_video(db_session, "dQw4w9WgXcQ", "Said it twice")
         response = await auth_client.post(
-            "/api/search", json={"youtube_url": video.youtube_url, "keyword": "test"}
+            "/api/search", json={"youtube_url": video.video_url, "keyword": "test"}
         )
         assert response.status_code == 200, response.text
         reported = response.json()["results"]
@@ -1538,13 +1624,17 @@ class TestGoogleEndpoint:
         assert response.status_code == 200
         assert response.json()["user"]["email"] == "stub@example.com"
 
-    async def test_a_rejected_token_is_401(self, auth_client, google_verifier) -> None:  # noqa: ANN001
+    async def test_a_rejected_token_is_401(
+        self, auth_client, google_verifier
+    ) -> None:  # noqa: ANN001
         google_verifier.identity = None
         response = await auth_client.post("/api/v1/auth/google", json={"id_token": "a" * 60})
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "INVALID_CREDENTIALS"
 
-    async def test_an_unverified_placeholder_is_refused(self, auth_client, google_verifier) -> None:  # noqa: ANN001
+    async def test_an_unverified_placeholder_is_refused(
+        self, auth_client, google_verifier
+    ) -> None:  # noqa: ANN001
         from app.services.google import GoogleIdentity
 
         # Somebody registered this address without proving they own it.
@@ -1557,6 +1647,8 @@ class TestGoogleEndpoint:
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "EMAIL_UNVERIFIED"
 
-    async def test_a_short_token_is_rejected_by_validation(self, auth_client) -> None:  # noqa: ANN001
+    async def test_a_short_token_is_rejected_by_validation(
+        self, auth_client
+    ) -> None:  # noqa: ANN001
         response = await auth_client.post("/api/v1/auth/google", json={"id_token": "short"})
         assert response.status_code == 422

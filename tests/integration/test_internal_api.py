@@ -27,7 +27,7 @@ async def _create_job_with_video(
     """Create a video with a unique URL plus a linked job, returning both."""
     uid = uuid4().hex[:12]
     video = Video(
-        youtube_url=f"https://www.youtube.com/watch?v={uid}",
+        video_url=f"https://www.youtube.com/watch?v={uid}",
         video_id=uid,
         language="en",
     )
@@ -77,7 +77,7 @@ class TestInternalGetJob:
         assert data["job_id"] == str(job.id)
         assert data["video_id"] == str(video.id)
         assert data["youtube_video_id"] == video.video_id
-        assert data["youtube_url"] == video.youtube_url
+        assert data["youtube_url"] == video.video_url
         assert data["status"] == "pending"
 
     @pytest.mark.asyncio
@@ -335,7 +335,7 @@ class TestInternalDownloads:
         assert data["download_id"] == str(download.id)
         assert data["video_id"] == str(video.id)
         assert data["youtube_video_id"] == video.video_id
-        assert data["youtube_url"] == video.youtube_url
+        assert data["youtube_url"] == video.video_url
         assert data["status"] == "pending"
         assert data["start_seconds"] == 30
         assert data["end_seconds"] == 90

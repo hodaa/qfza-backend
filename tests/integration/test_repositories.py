@@ -13,7 +13,7 @@ async def _make_video(db_session: AsyncSession, *, suffix: str = "") -> Video:
     """Create a video row for repository tests."""
     uid = uuid4().hex[:12]
     video = Video(
-        youtube_url=f"https://www.youtube.com/watch?v={uid}{suffix}",
+        video_url=f"https://www.youtube.com/watch?v={uid}{suffix}",
         video_id=f"{uid}{suffix}",
         language="en",
     )
@@ -49,7 +49,7 @@ class TestVideoRepository:
         repo = VideoRepository(db_session)
 
         video = await repo.create(
-            youtube_url="https://www.youtube.com/watch?v=newid111111",
+            video_url="https://www.youtube.com/watch?v=newid111111",
             video_id="newid111111",
             language="en",
             title="A Title",

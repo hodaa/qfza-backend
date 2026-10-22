@@ -4,6 +4,8 @@ from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models import Video
@@ -67,6 +69,16 @@ class TestSearchEndpoint:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
+    async def test_video_url_field_is_the_canonical_name(self, client: AsyncClient) -> None:
+        """A request naming the URL video_url is parsed, not rejected as missing."""
+        response = await client.post(
+            "/api/search",
+            json={"video_url": "https://example.com/video", "keyword": "test"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "UNSUPPORTED_VIDEO_SOURCE"
+
+    @pytest.mark.asyncio
     async def test_empty_keyword_returns_422(self, client: AsyncClient) -> None:
         response = await client.post(
             "/api/search",
@@ -83,13 +95,13 @@ class TestSearchEndpoint:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_non_youtube_url_returns_400(self, client: AsyncClient) -> None:
+    async def test_unsupported_source_returns_400(self, client: AsyncClient) -> None:
         response = await client.post(
             "/api/search",
             json={"youtube_url": "https://example.com/video", "keyword": "test"},
         )
         assert response.status_code == 400
-        assert response.json()["error"]["code"] == "INVALID_YOUTUBE_URL"
+        assert response.json()["error"]["code"] == "UNSUPPORTED_VIDEO_SOURCE"
 
     @pytest.mark.asyncio
     async def test_channel_url_returns_400(self, client: AsyncClient) -> None:
@@ -98,6 +110,7 @@ class TestSearchEndpoint:
             json={"youtube_url": "https://www.youtube.com/channel/UC123", "keyword": "test"},
         )
         assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_YOUTUBE_URL"
 
     @pytest.mark.asyncio
     async def test_watch_without_v_returns_400(self, client: AsyncClient) -> None:
@@ -106,6 +119,27 @@ class TestSearchEndpoint:
             json={"youtube_url": "https://www.youtube.com/watch", "keyword": "test"},
         )
         assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_YOUTUBE_URL"
+
+    @pytest.mark.asyncio
+    async def test_drive_url_files_a_canonical_drive_video(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        file_id = "1DOoJhC6NHpLSu2nAvaWy3HukVimEyyhE"
+        response = await client.post(
+            "/api/search",
+            json={
+                "youtube_url": f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
+                "keyword": "hello world",
+            },
+        )
+
+        assert response.status_code == 202
+        video = await db_session.scalar(select(Video).where(Video.video_id == file_id))
+        assert video is not None
+        assert video.video_url == f"https://drive.google.com/file/d/{file_id}"
+        # Anonymous requests leave the keyword on the video row itself.
+        assert video.last_keyword == "hello world"
 
 
 class TestVideoSearchEndpoint:
@@ -180,7 +214,7 @@ class TestNoResults:
 
         video_id = f"notfndvid{suffix}"
         video = Video(
-            youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+            video_url=f"https://www.youtube.com/watch?v={video_id}",
             video_id=video_id,
             title="Not Found Test",
             language="en",
@@ -212,7 +246,7 @@ class TestNoResults:
 
         response = await client.post(
             "/api/search",
-            json={"youtube_url": video.youtube_url, "keyword": "nonexistent"},
+            json={"youtube_url": video.video_url, "keyword": "nonexistent"},
         )
         assert response.status_code == 200
         data = response.json()
@@ -232,7 +266,7 @@ class TestNoResults:
 
         video_id = "nospeechvid"
         video = Video(
-            youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+            video_url=f"https://www.youtube.com/watch?v={video_id}",
             video_id=video_id,
             title="Silent Video",
             language="en",
@@ -244,7 +278,7 @@ class TestNoResults:
 
         response = await client.post(
             "/api/search",
-            json={"youtube_url": video.youtube_url, "keyword": "hello"},
+            json={"youtube_url": video.video_url, "keyword": "hello"},
         )
         assert response.status_code == 200
         data = response.json()
@@ -263,7 +297,7 @@ class TestNoResults:
 
         response = await client.post(
             "/api/search",
-            json={"youtube_url": video.youtube_url, "keyword": "hello"},
+            json={"youtube_url": video.video_url, "keyword": "hello"},
         )
         assert response.status_code == 200
         data = response.json()

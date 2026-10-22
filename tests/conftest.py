@@ -135,7 +135,7 @@ def _noop_task_dispatch(monkeypatch) -> None:
 def sample_video_data() -> dict:
     """Sample video data for tests."""
     return {
-        "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "video_id": "dQw4w9WgXcQ",
         "title": "Rick Astley - Never Gonna Give You Up",
         "duration_seconds": 212,

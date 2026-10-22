@@ -4,8 +4,17 @@ __pycache__
 .pytest_cache
 .ruff_cache
 .git
+.github
 .env
 tests
 jumpto_backend.egg-info
 scripts
 npm-debug.log
+.coverage
+htmlcov
+.DS_Store
+*.code-workspace
+README.md
+AGENTS.md
+qfza.md
+package-lock.json

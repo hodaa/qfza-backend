@@ -35,7 +35,7 @@ def _row(
     return {
         "video_id": video_id,
         "youtube_video_id": youtube_video_id,
-        "youtube_url": f"https://www.youtube.com/watch?v={youtube_video_id}",
+        "video_url": f"https://www.youtube.com/watch?v={youtube_video_id}",
         "title": title,
         "duration_seconds": 100,
         "snippet": snippet,

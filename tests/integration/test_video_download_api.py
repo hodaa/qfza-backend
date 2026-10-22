@@ -19,7 +19,7 @@ from app.services.video_downloads import (
 def _video(video_id: str) -> Video:
     """Build a stored video row."""
     return Video(
-        youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+        video_url=f"https://www.youtube.com/watch?v={video_id}",
         video_id=video_id,
         title="Test Video",
         duration_seconds=100,
@@ -91,14 +91,14 @@ class TestVideoFormats:
         db_session: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        video = _video("vidformats")
+        video = _video("vidformats1")
         video.available_heights = [1080, 720]
         video.formats_refreshed_at = datetime.now(UTC)
         db_session.add(video)
         await db_session.flush()
         sent = _record_dispatches(monkeypatch)
 
-        response = await client.get("/api/videos/vidformats/formats")
+        response = await client.get("/api/videos/vidformats1/formats")
 
         assert response.status_code == 200
         assert response.json() == {"heights": [1080, 720]}
@@ -110,19 +110,19 @@ class TestVideoFormats:
         db_session: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_session.add(_video("vidprobe"))
+        db_session.add(_video("vidprobe123"))
         await db_session.flush()
         sent = _record_dispatches(monkeypatch)
         monkeypatch.setattr("app.services.video_downloads.FORMATS_WAIT_SECONDS", 0)
 
-        response = await client.get("/api/videos/vidprobe/formats")
+        response = await client.get("/api/videos/vidprobe123/formats")
 
         assert response.status_code == 200
         assert response.json() == {"heights": []}
         assert sent == [
             (
                 "app.tasks.formats.probe_video_formats",
-                ["vidprobe", "https://www.youtube.com/watch?v=vidprobe"],
+                ["vidprobe123", "https://www.youtube.com/watch?v=vidprobe123"],
             )
         ]
 
@@ -132,23 +132,46 @@ class TestVideoFormats:
         db_session: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        video = _video("vidstale")
+        video = _video("vidstale123")
         video.available_heights = [720]
         video.formats_refreshed_at = datetime.now(UTC) - timedelta(days=2)
         db_session.add(video)
         await db_session.flush()
         sent = _record_dispatches(monkeypatch)
 
-        response = await client.get("/api/videos/vidstale/formats")
+        response = await client.get("/api/videos/vidstale123/formats")
 
         assert response.status_code == 200
         assert response.json() == {"heights": [720]}
         assert sent == [
             (
                 "app.tasks.formats.probe_video_formats",
-                ["vidstale", "https://www.youtube.com/watch?v=vidstale"],
+                ["vidstale123", "https://www.youtube.com/watch?v=vidstale123"],
             )
         ]
+
+    async def test_a_drive_video_answers_empty_without_probing(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        file_id = "1DOoJhC6NHpLSu2nAvaWy3HukVimEyyhE"
+        video = Video(
+            video_url=f"https://drive.google.com/file/d/{file_id}",
+            video_id=file_id,
+            title="Drive Video",
+            language="en",
+        )
+        db_session.add(video)
+        await db_session.flush()
+        sent = _record_dispatches(monkeypatch)
+
+        response = await client.get(f"/api/videos/{file_id}/formats")
+
+        assert response.status_code == 200
+        assert response.json() == {"heights": []}
+        assert sent == []
 
 
 class TestDownloadCreate:

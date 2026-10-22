@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 _EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
@@ -84,7 +84,11 @@ class SearchRequest(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    youtube_url: HttpUrl = Field(..., description="YouTube video URL")
+    video_url: HttpUrl = Field(
+        ...,
+        validation_alias=AliasChoices("video_url", "youtube_url"),
+        description="Video URL (YouTube or Google Drive)",
+    )
     keyword: str = Field(..., min_length=1, description="Keyword or phrase to search")
 
     @field_validator("keyword")

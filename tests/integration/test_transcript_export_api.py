@@ -12,7 +12,7 @@ from app.models import TranscriptWord, Video
 def _video(video_id: str, *, transcribed: bool = True) -> Video:
     """Build a video row, transcribed unless the test says otherwise."""
     return Video(
-        youtube_url=f"https://www.youtube.com/watch?v={video_id}",
+        video_url=f"https://www.youtube.com/watch?v={video_id}",
         video_id=video_id,
         title="Test Video",
         duration_seconds=100,

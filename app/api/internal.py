@@ -94,7 +94,7 @@ async def internal_get_job(
         job_id=job.id,
         video_id=job.video_id,
         youtube_video_id=video.video_id,
-        youtube_url=video.youtube_url,
+        youtube_url=video.video_url,
         status=job.status,
     )
 
@@ -232,7 +232,7 @@ async def internal_get_download(
         download_id=download.id,
         video_id=download.video_id,
         youtube_video_id=video.video_id,
-        youtube_url=video.youtube_url,
+        youtube_url=video.video_url,
         status=download.status,
         start_seconds=download.start_seconds,
         end_seconds=download.end_seconds,

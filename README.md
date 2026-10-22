@@ -31,7 +31,7 @@ pip install -e ".[dev]"
 
 # Copy environment template
 cp ../.env.example .env
-# Edit .env with your Assembly.ai API key
+# Edit .env as needed (SMTP, Google sign-in, Blob token, ...)
 
 # Setup databases
 ../scripts/setup_db.sh
@@ -41,6 +41,25 @@ cp ../.env.example .env
 ```
 
 API will be available at `http://localhost:8000`
+
+### Run with Docker
+
+`docker-compose.yml` builds and runs the API only — PostgreSQL and Redis are
+expected to be reachable servers, configured through `.env` (`DATABASE_URL`,
+`REDIS_URL`):
+
+```bash
+docker compose up --build          # API on http://localhost:8000
+
+# Apply schema migrations (a deploy-time step, see below)
+docker compose run --rm api alembic upgrade head
+
+docker compose down
+```
+
+Override the published port with `API_PORT`. If PostgreSQL or Redis runs on the
+Docker host itself, use `host.docker.internal` instead of `localhost` in those
+URLs so the container can reach it.
 
 ### Worker (transcription pipeline)
 
@@ -116,7 +135,6 @@ Search cached transcript for specific video.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | DATABASE_URL | PostgreSQL connection URL | `postgresql://postgres:postgres@localhost:5432/jumpto` |
-| ASSEMBLY_API_KEY | Assembly.ai API key | **required** |
 | REDIS_URL | Redis connection URL | `redis://localhost:6379/0` |
 | CORS_ORIGINS | Allowed CORS origins (comma-separated) | `http://localhost:5173` |
 | ENVIRONMENT | `development` or `production` | `development` |

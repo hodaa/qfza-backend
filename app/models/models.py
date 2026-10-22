@@ -21,7 +21,7 @@ from app.core.database import Base
 
 
 class Video(Base):
-    """Video model representing a YouTube video."""
+    """Video model representing a searchable video from a supported source."""
 
     __tablename__ = "videos"
 
@@ -30,12 +30,18 @@ class Video(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
-    youtube_url: Mapped[str] = mapped_column(String(500), unique=True, nullable=False)
+    # Canonical URL for the source: a youtube.com/watch URL or a Drive file URL.
+    video_url: Mapped[str] = mapped_column(String(500), unique=True, nullable=False)
+    # The id the source itself uses: 11 chars on YouTube, 33 on Drive.
     video_id: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     language: Mapped[str | None] = mapped_column(String(20), nullable=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    # The keyword an anonymous visitor last searched in this video. Signed-in
+    # searches live in search_history instead (one row per user), so this single
+    # slot is the only trace an anonymous search leaves.
+    last_keyword: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Downloadable H.264 heights the worker last probed for this video, tallest
     # first. Null until a probe has run; an empty list is a real answer (no
     # named H.264 quality) and keeps the picker from re-probing on every view.
@@ -336,7 +342,8 @@ class SearchHistory(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    video_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 50 chars: wide enough for a Drive file id (33) as well as a YouTube one.
+    video_id: Mapped[str] = mapped_column(String(50), nullable=False)
     keyword: Mapped[str] = mapped_column(String(500), nullable=False)
     locale: Mapped[str | None] = mapped_column(String(10), nullable=True)
     source: Mapped[str | None] = mapped_column(String(50), nullable=True)

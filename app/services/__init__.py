@@ -18,12 +18,6 @@ from app.services.video_downloads import (
     download_filename,
     validated_range,
 )
-from app.services.youtube import (
-    YouTubeVideoInfo,
-    extract_video_id,
-    is_youtube_url,
-    validate_youtube_url,
-)
 
 __all__ = [
     "FullTextSearchService",
@@ -33,15 +27,11 @@ __all__ = [
     "TranscriptPdfRenderer",
     "VideoDownloadService",
     "VideoFormatsService",
-    "YouTubeVideoInfo",
     "assemble_lines",
     "download_filename",
-    "extract_video_id",
     "format_timestamp",
     "is_rtl_language",
     "is_rtl_transcript",
-    "is_youtube_url",
     "normalize_language",
     "validated_range",
-    "validate_youtube_url",
 ]

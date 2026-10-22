@@ -66,12 +66,6 @@ class Settings(BaseSettings):
         description="Max seconds a transcription job may run before it is failed",
     )
 
-    # Assembly AI
-    assembly_api_key: str = Field(
-        default="",
-        description="Assembly.ai API key for transcription",
-    )
-
     # CORS
     cors_origins: str = Field(
         default="http://localhost:5173",

@@ -1,12 +1,18 @@
 """YouTube URL parsing and validation utilities."""
 
 import re
-from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from app.core.exceptions import InvalidYouTubeURLError
 from app.core.logging import get_logger
+from app.sources.base import SourceCapabilities, VideoRef
 
 logger = get_logger(__name__)
+
+#: Hosts that belong to YouTube. Every URL here is claimed by the YouTube
+#: source, even one that turns out not to be a video: the caller then gets the
+#: source-specific "invalid YouTube URL" answer, not "unsupported source".
+YOUTUBE_HOSTS = frozenset({"youtube.com", "youtu.be"})
 
 # YouTube URL patterns
 YOUTUBE_PATTERNS = [
@@ -39,14 +45,6 @@ REJECTED_PATTERNS = [
     # Watch URL without v parameter
     re.compile(r"youtube\.com/watch(?:\?|$)(?!.*v=)", re.IGNORECASE),
 ]
-
-
-@dataclass
-class YouTubeVideoInfo:
-    """Parsed YouTube video information."""
-
-    video_id: str
-    original_url: str
 
 
 def normalize_youtube_url(video_id: str) -> str:
@@ -96,15 +94,15 @@ def is_youtube_url(url: str) -> bool:
     return extract_video_id(url) is not None
 
 
-def validate_youtube_url(url: str) -> YouTubeVideoInfo:
+def validate_youtube_url(url: str) -> VideoRef:
     """
-    Validate and parse YouTube URL.
+    Validate and parse a YouTube URL into a source-agnostic video reference.
 
     Args:
         url: YouTube URL string
 
     Returns:
-        YouTubeVideoInfo with video_id and original_url
+        VideoRef with the video id and the canonical watch URL
 
     Raises:
         InvalidYouTubeURLError: If URL is not a valid YouTube video URL
@@ -121,4 +119,29 @@ def validate_youtube_url(url: str) -> YouTubeVideoInfo:
         raise InvalidYouTubeURLError(url)
 
     logger.debug("Parsed YouTube URL", video_id=video_id, url=url)
-    return YouTubeVideoInfo(video_id=video_id, original_url=normalize_youtube_url(video_id))
+    return VideoRef(
+        source=YouTubeSource.name,
+        source_id=video_id,
+        canonical_url=normalize_youtube_url(video_id),
+    )
+
+
+def is_youtube_host(url: str) -> bool:
+    """Whether the URL points at a YouTube host, whatever its shape."""
+    host = urlsplit(url).netloc.lower()
+    return host in YOUTUBE_HOSTS or host.endswith(".youtube.com")
+
+
+class YouTubeSource:
+    """YouTube videos. Every capability is on: captions, search and a ladder."""
+
+    name: str = "youtube"
+    capabilities: SourceCapabilities = SourceCapabilities(qualities=True)
+
+    def matches(self, url: str) -> bool:
+        """Whether the URL is on a YouTube host."""
+        return is_youtube_host(url)
+
+    def identify(self, url: str) -> VideoRef:
+        """Parse the URL into a VideoRef, or raise when it is malformed."""
+        return validate_youtube_url(url)

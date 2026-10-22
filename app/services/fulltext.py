@@ -35,7 +35,7 @@ class FullTextSearchService:
             VideoSearchResult(
                 video_id=row["video_id"],
                 youtube_video_id=row["youtube_video_id"],
-                youtube_url=row["youtube_url"],
+                youtube_url=row["video_url"],
                 title=row["title"],
                 duration_seconds=row["duration_seconds"],
                 snippet=row["snippet"],

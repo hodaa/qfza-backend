@@ -29,7 +29,7 @@ async def test_seeded_video_exact_phrase_search(
     from datetime import datetime
 
     video = Video(
-        youtube_url="https://www.youtube.com/watch?v=test123",
+        video_url="https://www.youtube.com/watch?v=test123",
         video_id="test123",
         title="Test Video",
         duration_seconds=100,
@@ -114,7 +114,7 @@ async def test_large_transcript_search(
     Seeds 1000 words and asserts every match is returned.
     """
     video = Video(
-        youtube_url="https://www.youtube.com/watch?v=perftest123",
+        video_url="https://www.youtube.com/watch?v=perftest123",
         video_id="perftest123",
         title="Performance Test",
         duration_seconds=100,
@@ -162,7 +162,7 @@ async def test_full_job_lifecycle_with_driver(
     """
     # Create video without transcript
     video = Video(
-        youtube_url="https://www.youtube.com/watch?v=lifecycle12",
+        video_url="https://www.youtube.com/watch?v=lifecycle12",
         video_id="lifecycle12",
         title="Lifecycle Test",
     )
@@ -172,7 +172,7 @@ async def test_full_job_lifecycle_with_driver(
     # Initial search - cache miss
     response = await client.post(
         "/api/search",
-        json={"youtube_url": video.youtube_url, "keyword": "hello world"},
+        json={"youtube_url": video.video_url, "keyword": "hello world"},
     )
     assert response.status_code == 202
     data = response.json()
@@ -209,7 +209,7 @@ async def test_failed_job_returns_user_safe_error(
     Test that failed job returns user-safe error string (NN-4).
     """
     video = Video(
-        youtube_url="https://www.youtube.com/watch?v=fail123test",
+        video_url="https://www.youtube.com/watch?v=fail123test",
         video_id="fail123test",
         title="Fail Test",
     )
@@ -218,7 +218,7 @@ async def test_failed_job_returns_user_safe_error(
 
     response = await client.post(
         "/api/search",
-        json={"youtube_url": video.youtube_url, "keyword": "test"},
+        json={"youtube_url": video.video_url, "keyword": "test"},
     )
     assert response.status_code == 202
     job_id = response.json()["job_id"]
@@ -243,7 +243,7 @@ async def test_resubmit_after_failed_creates_new_job(
     Test that re-submitting after a failed job creates a NEW job.
     """
     video = Video(
-        youtube_url="https://www.youtube.com/watch?v=resubmit123",
+        video_url="https://www.youtube.com/watch?v=resubmit123",
         video_id="resubmit123",
         title="Resubmit Test",
     )
@@ -253,7 +253,7 @@ async def test_resubmit_after_failed_creates_new_job(
     # First submission
     response1 = await client.post(
         "/api/search",
-        json={"youtube_url": video.youtube_url, "keyword": "test"},
+        json={"youtube_url": video.video_url, "keyword": "test"},
     )
     assert response1.status_code == 202
     job_id_1 = response1.json()["job_id"]
@@ -265,7 +265,7 @@ async def test_resubmit_after_failed_creates_new_job(
     # Re-submit same video
     response2 = await client.post(
         "/api/search",
-        json={"youtube_url": video.youtube_url, "keyword": "test"},
+        json={"youtube_url": video.video_url, "keyword": "test"},
     )
     assert response2.status_code == 202
     job_id_2 = response2.json()["job_id"]
@@ -309,13 +309,13 @@ async def test_concurrent_dedupe_race_safe(
     async with TestAsyncSessionFactory() as session:
         from sqlalchemy import func, select
 
-        videos = await session.execute(select(Video).where(Video.youtube_url == video_url))
+        videos = await session.execute(select(Video).where(Video.video_url == video_url))
         assert len(videos.scalars().all()) == 1
 
         job_count = await session.execute(
             select(func.count(Job.id))
             .join(Video, Job.video_id == Video.id)
-            .where(Video.youtube_url == video_url)
+            .where(Video.video_url == video_url)
         )
         assert job_count.scalar() == 1
 
@@ -329,7 +329,7 @@ async def test_post_completion_research_is_cache_hit(
     Test that after job completion, re-search is a cache hit (no new job).
     """
     video = Video(
-        youtube_url="https://www.youtube.com/watch?v=cachehit123",
+        video_url="https://www.youtube.com/watch?v=cachehit123",
         video_id="cachehit123",
         title="Cache Hit Test",
     )
@@ -339,7 +339,7 @@ async def test_post_completion_research_is_cache_hit(
     # First search
     response1 = await client.post(
         "/api/search",
-        json={"youtube_url": video.youtube_url, "keyword": "hello world"},
+        json={"youtube_url": video.video_url, "keyword": "hello world"},
     )
     assert response1.status_code == 202
     job_id = response1.json()["job_id"]
@@ -351,7 +351,7 @@ async def test_post_completion_research_is_cache_hit(
     # Re-search same video + keyword
     response2 = await client.post(
         "/api/search",
-        json={"youtube_url": video.youtube_url, "keyword": "hello world"},
+        json={"youtube_url": video.video_url, "keyword": "hello world"},
     )
 
     # Should be cache hit (200), not 202

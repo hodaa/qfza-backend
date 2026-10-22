@@ -24,12 +24,18 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import DownloadNotFoundError, ValidationError, VideoNotFoundError
+from app.core.exceptions import (
+    DownloadNotFoundError,
+    UnsupportedVideoSourceError,
+    ValidationError,
+    VideoNotFoundError,
+)
 from app.core.logging import get_logger
 from app.models import Video, VideoDownload
 from app.repositories import VideoDownloadRepository, VideoRepository
 from app.services.blob_store import delete_blob_url
 from app.services.messaging import dispatch_formats_probe
+from app.sources import resolve_source
 
 logger = get_logger(__name__)
 
@@ -260,13 +266,17 @@ class VideoFormatsService:
         self._dispatch = dispatch
         self._sleep = sleep
 
-    async def get_heights(self, youtube_video_id: str) -> list[int]:
+    async def get_heights(self, video_id: str) -> list[int]:
         """Return the cached quality ladder, probing once when none is stored.
 
-        A stale ladder is still served immediately; a refresh is only queued,
-        so a visitor never waits for a probe they did not ask for.
+        A source without a quality ladder (Drive) has nothing to offer and is
+        answered immediately with an empty list. A stale ladder is still served
+        immediately; a refresh is only queued, so a visitor never waits for a
+        probe they did not ask for.
         """
-        video = await _require_video(self._video_repo, youtube_video_id)
+        video = await _require_video(self._video_repo, video_id)
+        if not _has_quality_ladder(video):
+            return []
         if video.available_heights is not None:
             if _ladder_is_stale(video.formats_refreshed_at):
                 await self._dispatch_quietly(video)
@@ -278,11 +288,11 @@ class VideoFormatsService:
     async def _dispatch_quietly(self, video: Video) -> bool:
         """Queue a probe; a broker failure only means "no fresh answer"."""
         try:
-            await asyncio.to_thread(self._dispatch, video.video_id, video.youtube_url)
+            await asyncio.to_thread(self._dispatch, video.video_id, video.video_url)
             return True
         except Exception:
             logger.warning(
-                "Formats probe dispatch failed", youtube_video_id=video.video_id, exc_info=True
+                "Formats probe dispatch failed", source_video_id=video.video_id, exc_info=True
             )
             return False
 
@@ -298,16 +308,29 @@ class VideoFormatsService:
             await self._session.refresh(video)
             if video.formats_refreshed_at is not None:
                 return list(video.available_heights or [])
-        logger.info("Formats probe timed out", youtube_video_id=video.video_id)
+        logger.info("Formats probe timed out", source_video_id=video.video_id)
         return []
 
 
-async def _require_video(video_repo: VideoRepository, youtube_video_id: str) -> Video:
+async def _require_video(video_repo: VideoRepository, video_id: str) -> Video:
     """Resolve the video or raise the 404 the API contract expects."""
-    video = await video_repo.get_by_video_id_lite(youtube_video_id)
+    video = await video_repo.get_by_video_id_lite(video_id)
     if video is None:
-        raise VideoNotFoundError(youtube_video_id)
+        raise VideoNotFoundError(video_id)
     return video
+
+
+def _has_quality_ladder(video: Video) -> bool:
+    """Whether the video's source offers a quality ladder to pick from.
+
+    A stored URL that no strategy claims is a data bug, not a request error:
+    it is answered like a failed probe, so the endpoint keeps its "an empty
+    list means no qualities" contract instead of inventing a new failure.
+    """
+    try:
+        return resolve_source(video.video_url).capabilities.qualities
+    except UnsupportedVideoSourceError:
+        return False
 
 
 def _ladder_is_stale(refreshed_at: datetime | None) -> bool:

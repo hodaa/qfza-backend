@@ -159,6 +159,28 @@ class InvalidYouTubeURLError(DomainError):
         )
 
 
+class InvalidVideoURLError(DomainError):
+    """Exception for a malformed URL on a source the app does support."""
+
+    def __init__(self, url: str) -> None:
+        super().__init__(
+            f"Invalid video URL: {url}",
+            code="INVALID_VIDEO_URL",
+            details={"url": url},
+        )
+
+
+class UnsupportedVideoSourceError(DomainError):
+    """Exception for a video URL on a host the app does not support."""
+
+    def __init__(self, url: str) -> None:
+        super().__init__(
+            f"Unsupported video source: {url}",
+            code="UNSUPPORTED_VIDEO_SOURCE",
+            details={"url": url},
+        )
+
+
 # Auth errors. Codes mirror app.schemas.auth.ErrorCode so the client can key off
 # one vocabulary; the client localizes, the backend only supplies the code.
 
@@ -314,6 +336,8 @@ def _get_status_code(error_code: str) -> int:
     mapping = {
         "VALIDATION_ERROR": status.HTTP_422_UNPROCESSABLE_ENTITY,
         "INVALID_YOUTUBE_URL": status.HTTP_400_BAD_REQUEST,
+        "INVALID_VIDEO_URL": status.HTTP_400_BAD_REQUEST,
+        "UNSUPPORTED_VIDEO_SOURCE": status.HTTP_400_BAD_REQUEST,
         "NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "VIDEO_NOT_TRANSCRIBED": status.HTTP_404_NOT_FOUND,
         "CONFLICT": status.HTTP_409_CONFLICT,

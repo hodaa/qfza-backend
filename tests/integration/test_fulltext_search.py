@@ -21,7 +21,7 @@ async def _seed_transcribed_video(
 ) -> Video:
     """Create a transcribed video with a real to_tsvector vector."""
     video = Video(
-        youtube_url=f"https://www.youtube.com/watch?v={youtube_video_id}",
+        video_url=f"https://www.youtube.com/watch?v={youtube_video_id}",
         video_id=youtube_video_id,
         title=title,
         language="en",
@@ -45,7 +45,7 @@ async def _seed_transcribed_video(
 async def _seed_untranscribed_video(db_session, *, youtube_video_id: str) -> Video:
     """Create a video with no transcript (no tsvector)."""
     video = Video(
-        youtube_url=f"https://www.youtube.com/watch?v={youtube_video_id}",
+        video_url=f"https://www.youtube.com/watch?v={youtube_video_id}",
         video_id=youtube_video_id,
         title="Untranscribed",
         language="en",

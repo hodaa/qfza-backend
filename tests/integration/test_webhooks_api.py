@@ -15,7 +15,7 @@ async def _create_job_with_video(
     """Create a video with a unique URL plus a linked job, returning both."""
     uid = uuid4().hex[:12]
     video = Video(
-        youtube_url=f"https://www.youtube.com/watch?v={uid}",
+        video_url=f"https://www.youtube.com/watch?v={uid}",
         video_id=uid,
         language="en",
     )

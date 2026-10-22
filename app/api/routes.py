@@ -48,7 +48,6 @@ from app.services import (
     assemble_lines,
     download_filename,
     is_rtl_transcript,
-    validate_youtube_url,
 )
 from app.services.history_recorder import (
     STATUS_FOUND,
@@ -58,6 +57,7 @@ from app.services.history_recorder import (
 )
 from app.services.messaging import dispatch_transcription, dispatch_video_download
 from app.services.video_downloads import STATUS_READY
+from app.sources import identify_video
 
 router = APIRouter()
 
@@ -145,7 +145,7 @@ def get_video_formats_service(
     responses={
         200: {"model": SearchResponseCached, "description": "Cached results found"},
         202: {"model": SearchResponseProcessing, "description": "Job created, processing started"},
-        400: {"description": "Invalid YouTube URL"},
+        400: {"description": "Invalid or unsupported video URL"},
         422: {"description": "Validation error"},
     },
 )
@@ -160,7 +160,7 @@ async def search(
     session: AsyncSession = Depends(get_db_session),
 ) -> SearchResponse:
     """
-    Search for a keyword in a YouTube video transcript (cache-first).
+    Search for a keyword in a supported video's transcript (cache-first).
 
     Returns cached results immediately when the video is already transcribed;
     otherwise queues a transcription job and returns a job id.
@@ -182,21 +182,32 @@ async def search(
         # of the search, even if the transcript is refetched and the name changes.
         await recorder.record(
             user_id=caller_id,
-            video_id=youtube_info.video_id,
+            video_id=video_ref.source_id,
             keyword=request.keyword,
             status=status,
             locale=_client_locale(request_object),
             source=_client_source(request_object),
             progress_seconds=progress_seconds,
-            video_title=getattr(video, "title", None) if video is not None else None,
+            video_title=video.title,
             match_timestamps=match_timestamps,
             match_results=match_results,
         )
 
-    youtube_info = validate_youtube_url(str(request.youtube_url))
-    video = await video_repo.get_by_video_id_lite(youtube_info.video_id)
+    video_ref = identify_video(str(request.video_url))
+    video = await video_repo.get_by_video_id_lite(video_ref.source_id)
 
-    if video and video.transcribed_at:
+    if video is None:
+        video = await _get_or_create_video(
+            video_repo,
+            video_ref.canonical_url,
+            video_ref.source_id,
+        )
+
+    if caller_id is None:
+        # The only trace an anonymous search leaves: the video row itself.
+        await video_repo.remember_keyword(video.id, request.keyword)
+
+    if video.transcribed_at:
         results = await search_service.search(video.id, request.keyword)
         # A transcribed video with a null transcript has no speech/sound at all;
         # surface that distinctly from "keyword not found in a real transcript".
@@ -221,13 +232,6 @@ async def search(
             match_results=[r.model_dump(mode="json") for r in results],
         )
         return SearchResponseCached(status="found", results=results)
-
-    if not video:
-        video = await _get_or_create_video(
-            video_repo,
-            youtube_info.original_url,
-            youtube_info.video_id,
-        )
 
     job = await job_service.create_or_get_job(video.id)
     # Recorded before the commit so the row lands in the same transaction as the
@@ -538,18 +542,16 @@ async def search_videos_by_text(
 
 async def _get_or_create_video(
     video_repo: VideoRepository,
-    youtube_url: str,
-    youtube_id: str,
+    video_url: str,
+    video_id: str,
     language: str = "en",
 ) -> Video:
     """Create a video record, resolving a concurrent-creation race."""
     try:
-        return await video_repo.create(
-            youtube_url=youtube_url, video_id=youtube_id, language=language
-        )
+        return await video_repo.create(video_url=video_url, video_id=video_id, language=language)
     except IntegrityError:
         await video_repo.session.rollback()
-        video = await video_repo.get_by_video_id_lite(youtube_id)
+        video = await video_repo.get_by_video_id_lite(video_id)
         if video:
             return video
         raise

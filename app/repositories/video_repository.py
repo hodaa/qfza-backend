@@ -40,12 +40,12 @@ class VideoRepository:
         return result.scalar_one_or_none()
 
     async def get_by_video_id(self, video_id: str) -> Video | None:
-        """Get video by YouTube video ID."""
+        """Get video by its source video ID."""
         result = await self.session.execute(select(Video).where(Video.video_id == video_id))
         return result.scalar_one_or_none()
 
     async def get_by_video_id_lite(self, video_id: str) -> Video | None:
-        """Get video by YouTube video ID, skipping the heavy transcript columns."""
+        """Get video by its source video ID, skipping the heavy transcript columns."""
         result = await self.session.execute(
             select(Video)
             .where(Video.video_id == video_id)
@@ -60,7 +60,7 @@ class VideoRepository:
     async def create(
         self,
         *,
-        youtube_url: str,
+        video_url: str,
         video_id: str,
         language: str,
         title: str | None = None,
@@ -68,7 +68,7 @@ class VideoRepository:
     ) -> Video:
         """Create a new video record."""
         video = Video(
-            youtube_url=youtube_url,
+            video_url=video_url,
             video_id=video_id,
             title=title,
             duration_seconds=duration_seconds,
@@ -76,7 +76,21 @@ class VideoRepository:
         )
         self.session.add(video)
         await self.session.flush()
-        logger.info("Created video", video_id=video.id, youtube_video_id=video_id)
+        logger.info("Created video", video_id=video.id, source_video_id=video_id)
+        return video
+
+    async def remember_keyword(self, video_id: UUID, keyword: str) -> Video:
+        """Record the keyword an anonymous visitor last searched in this video.
+
+        Signed-in searches are filed per user in search_history; this is the
+        anonymous counterpart, kept on the video row itself.
+        """
+        video = await self.session.get(Video, video_id)
+        if not video:
+            raise ValueError(f"Video {video_id} not found")
+        video.last_keyword = keyword
+        await self.session.flush()
+        logger.info("Remembered anonymous keyword", video_id=video_id)
         return video
 
     async def update_metadata(
@@ -169,7 +183,7 @@ class VideoRepository:
             select(
                 Video.id.label("video_id"),
                 Video.video_id.label("youtube_video_id"),
-                Video.youtube_url,
+                Video.video_url,
                 Video.title,
                 Video.duration_seconds,
                 rank.label("rank"),
