@@ -9,12 +9,14 @@ from .models import (
     User,
     Video,
     VideoDownload,
+    VideoNote,
 )
 
 __all__ = [
     "ContactMessage",
     "Video",
     "VideoDownload",
+    "VideoNote",
     "TranscriptWord",
     "Job",
     "User",

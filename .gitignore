@@ -73,3 +73,5 @@ frontend/.vite/
 *.pyc
 *.pyo
 *.pyd
+.vercel
+.env*

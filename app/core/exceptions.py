@@ -148,6 +148,17 @@ class DownloadNotFoundError(NotFoundError):
         )
 
 
+class NotesNotFoundError(NotFoundError):
+    """Exception for a lecture-notes request that does not resolve."""
+
+    def __init__(self, note_id: str) -> None:
+        super().__init__(
+            f"Lecture notes with id {note_id} not found",
+            resource="notes",
+            resource_id=note_id,
+        )
+
+
 class InvalidYouTubeURLError(DomainError):
     """Exception for invalid YouTube URL (domain validation, not format validation)."""
 

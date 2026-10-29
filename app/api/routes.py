@@ -13,12 +13,13 @@ from app.core.config import Settings, get_settings
 from app.core.database import get_db_session
 from app.core.exceptions import VideoNotFoundError, VideoNotTranscribedError
 from app.core.logging import get_logger
-from app.models import Video, VideoDownload
+from app.models import Video, VideoDownload, VideoNote
 from app.repositories import (
     ContactRepository,
     JobRepository,
     TranscriptWordRepository,
     VideoDownloadRepository,
+    VideoNoteRepository,
     VideoRepository,
 )
 from app.repositories.search_history_repository import SearchHistoryRepository
@@ -29,6 +30,8 @@ from app.schemas import (
     DownloadCreateResponse,
     DownloadStatusResponse,
     FullTextSearchResponse,
+    NotesCreateResponse,
+    NotesStatusResponse,
     SearchRequest,
     SearchResponse,
     SearchResponseCached,
@@ -36,6 +39,9 @@ from app.schemas import (
     SearchStatus,
     StatusResponse,
     VideoFormatsResponse,
+    VideoPrepareResponse,
+    VideoResolveRequest,
+    VideoResolveResponse,
     VideoSearchResponse,
 )
 from app.services import (
@@ -45,6 +51,8 @@ from app.services import (
     TranscriptPdfRenderer,
     VideoDownloadService,
     VideoFormatsService,
+    VideoNotesService,
+    VideoWorkspaceService,
     assemble_lines,
     download_filename,
     is_rtl_transcript,
@@ -55,7 +63,11 @@ from app.services.history_recorder import (
     STATUS_PROCESSING,
     SearchHistoryRecorder,
 )
-from app.services.messaging import dispatch_transcription, dispatch_video_download
+from app.services.messaging import (
+    dispatch_lecture_notes,
+    dispatch_transcription,
+    dispatch_video_download,
+)
 from app.services.video_downloads import STATUS_READY
 from app.sources import identify_video
 
@@ -136,6 +148,80 @@ def get_video_formats_service(
 ) -> VideoFormatsService:
     """Build the format-listing service."""
     return VideoFormatsService(video_repo, session)
+
+
+def get_video_note_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> VideoNoteRepository:
+    """Build a lecture-notes repository for the request session."""
+    return VideoNoteRepository(session)
+
+
+def get_video_notes_service(
+    video_repo: VideoRepository = Depends(get_video_repo),
+    note_repo: VideoNoteRepository = Depends(get_video_note_repo),
+) -> VideoNotesService:
+    """Build the lecture-notes lifecycle service."""
+    return VideoNotesService(video_repo, note_repo)
+
+
+def get_video_workspace_service(
+    video_repo: VideoRepository = Depends(get_video_repo),
+    job_service: JobService = Depends(get_job_service),
+) -> VideoWorkspaceService:
+    """Build the video resolve/prepare service."""
+    return VideoWorkspaceService(video_repo, job_service)
+
+
+@router.post(
+    "/api/videos/resolve",
+    response_model=VideoResolveResponse,
+    responses={
+        200: {"model": VideoResolveResponse, "description": "Video resolved"},
+        400: {"description": "Invalid or unsupported video URL"},
+        422: {"description": "Validation error"},
+    },
+)
+async def resolve_video(
+    request: VideoResolveRequest,
+    workspace_service: VideoWorkspaceService = Depends(get_video_workspace_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> VideoResolveResponse:
+    """Resolve a pasted link to a stored video without starting transcription."""
+    video = await workspace_service.resolve(str(request.video_url))
+    await session.commit()
+    return VideoResolveResponse(
+        id=video.id,
+        video_id=video.video_id,
+        title=video.title,
+        duration_seconds=video.duration_seconds,
+        transcribed=video.transcribed_at is not None,
+    )
+
+
+@router.post(
+    "/api/videos/{youtube_video_id}/prepare",
+    response_model=VideoPrepareResponse,
+    responses={
+        200: {"model": VideoPrepareResponse, "description": "Transcript ready or queued"},
+        404: {"description": "Video not found"},
+    },
+)
+async def prepare_video(
+    youtube_video_id: str,
+    workspace_service: VideoWorkspaceService = Depends(get_video_workspace_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> VideoPrepareResponse:
+    """Ensure a video's transcript is ready, queueing transcription when needed."""
+    video, job, should_dispatch = await workspace_service.prepare(youtube_video_id)
+    await session.commit()
+    if job is not None and should_dispatch:
+        await asyncio.to_thread(dispatch_transcription, job.id)
+    return VideoPrepareResponse(
+        status="processing" if job is not None else "ready",
+        video_id=video.id,
+        job_id=job.id if job is not None else None,
+    )
 
 
 @router.post(
@@ -411,6 +497,51 @@ async def download_transcript_pdf(
 
 
 @router.post(
+    "/api/videos/{youtube_video_id}/notes",
+    response_model=NotesCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        202: {"model": NotesCreateResponse, "description": "Lecture notes queued"},
+        404: {"description": "Video not found or not transcribed"},
+    },
+)
+async def create_video_notes(
+    youtube_video_id: str,
+    regenerate: bool = Query(False, description="Retire the cached PDF and generate again"),
+    notes_service: VideoNotesService = Depends(get_video_notes_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> NotesCreateResponse:
+    """Queue AI lecture notes, or return the cached/active request.
+
+    Ready notes are cached by video, so a second click returns the same PDF
+    instead of paying for OCR and generation again unless regeneration is asked.
+    """
+    note = await notes_service.create(youtube_video_id, regenerate=regenerate)
+    await session.commit()
+    if note.status == "pending":
+        await asyncio.to_thread(dispatch_lecture_notes, note.id)
+    return NotesCreateResponse(id=note.id, status=note.status)
+
+
+@router.get(
+    "/api/videos/{youtube_video_id}/notes/{note_id}",
+    response_model=NotesStatusResponse,
+    responses={
+        200: {"model": NotesStatusResponse, "description": "Lecture notes status"},
+        404: {"description": "Video or lecture notes not found"},
+    },
+)
+async def get_video_notes_status(
+    youtube_video_id: str,
+    note_id: UUID,
+    notes_service: VideoNotesService = Depends(get_video_notes_service),
+) -> NotesStatusResponse:
+    """Return a lecture-notes request's state, URL once ready, and filename."""
+    note = await notes_service.get(youtube_video_id, note_id)
+    return _notes_status_response(note, youtube_video_id)
+
+
+@router.post(
     "/api/videos/{youtube_video_id}/downloads",
     response_model=DownloadCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -478,6 +609,17 @@ async def consume_video_download(
     """Delete the download's blob now that the client has the file. Idempotent."""
     download = await download_service.consume(youtube_video_id, download_id)
     return _download_status_response(download, youtube_video_id)
+
+
+def _notes_status_response(note: VideoNote, youtube_video_id: str) -> NotesStatusResponse:
+    """Map a lecture-notes row to the API contract."""
+    return NotesStatusResponse(
+        id=note.id,
+        status=note.status,
+        url=note.blob_url if note.status == "ready" else None,
+        error=note.error,
+        filename=download_filename(youtube_video_id, prefix="notes", suffix=".pdf"),
+    )
 
 
 def _download_status_response(

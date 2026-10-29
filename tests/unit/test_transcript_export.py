@@ -2,6 +2,8 @@
 
 from uuid import uuid4
 
+from fpdf import FPDF
+
 from app.models import TranscriptWord
 from app.services.transcript_export import (
     LINE_BREAK_GAP_SECONDS,
@@ -137,6 +139,22 @@ class TestTranscriptPdfRenderer:
         arabic = renderer.render(title="t", lines=lines, is_rtl=True)
         latin = renderer.render(title="t", lines=lines, is_rtl=False)
         assert arabic != latin
+
+    def test_arabic_title_and_lines_are_right_aligned(self, monkeypatch) -> None:
+        alignments: list[str] = []
+        original = FPDF.multi_cell
+
+        def capture(self, w, h, text, *args, **kwargs) -> None:
+            alignments.append(kwargs["align"])
+            original(self, w, h, text, *args, **kwargs)
+
+        monkeypatch.setattr(FPDF, "multi_cell", capture)
+        TranscriptPdfRenderer().render(
+            title="اختبار",
+            lines=[TranscriptLine(seconds=1.0, text="مرحبا بكم")],
+            is_rtl=True,
+        )
+        assert alignments == ["R", "R"]
 
 
 class TestIsRtlTranscript:

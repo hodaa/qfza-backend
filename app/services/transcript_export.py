@@ -157,18 +157,32 @@ class TranscriptPdfRenderer:
         # letters; the direction sets the line's base direction, which is
         # what places the leading timestamp on the side reading starts from.
         document.set_text_shaping(True, direction="rtl" if is_rtl else "ltr")
-        self._write_title(document, title)
+        self._write_title(document, title, is_rtl=is_rtl)
         document.set_font(_FONT_NAME, size=_BODY_SIZE)
         for line in lines:
-            self._write_line(document, line)
+            self._write_line(document, line, is_rtl=is_rtl)
         return bytes(document.output())
 
     @staticmethod
-    def _write_title(document: FPDF, title: str) -> None:
+    def _write_title(document: FPDF, title: str, *, is_rtl: bool) -> None:
         document.set_font(_FONT_NAME, size=_TITLE_SIZE)
-        document.multi_cell(0, _LINE_HEIGHT * 2, title, new_x="LMARGIN", new_y="NEXT")
+        document.multi_cell(
+            0,
+            _LINE_HEIGHT * 2,
+            title,
+            align="R" if is_rtl else "J",
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
 
     @staticmethod
-    def _write_line(document: FPDF, line: TranscriptLine) -> None:
+    def _write_line(document: FPDF, line: TranscriptLine, *, is_rtl: bool) -> None:
         text = f"{format_timestamp(line.seconds)}  {line.text}"
-        document.multi_cell(0, _LINE_HEIGHT, text, new_x="LMARGIN", new_y="NEXT")
+        document.multi_cell(
+            0,
+            _LINE_HEIGHT,
+            text,
+            align="R" if is_rtl else "J",
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )

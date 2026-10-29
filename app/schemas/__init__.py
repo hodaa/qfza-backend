@@ -99,6 +99,40 @@ class SearchRequest(BaseModel):
         return v.strip()
 
 
+class VideoResolveRequest(BaseModel):
+    """Request schema for POST /api/videos/resolve."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    video_url: HttpUrl = Field(
+        ...,
+        validation_alias=AliasChoices("video_url", "youtube_url"),
+        description="Video URL (YouTube or Google Drive)",
+    )
+
+
+class VideoResolveResponse(BaseModel):
+    """A stored video identified by a pasted link."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    video_id: str
+    title: str | None = None
+    duration_seconds: int | None = None
+    transcribed: bool = Field(..., description="Whether the transcript is ready")
+
+
+class VideoPrepareResponse(BaseModel):
+    """Whether a video's transcript is ready or a job is running."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    status: str = Field(..., description="ready | processing")
+    video_id: UUID
+    job_id: UUID | None = Field(None, description="Set while transcription is running")
+
+
 class SearchResponseCached(BaseModel):
     """Response schema for cached search results."""
 
@@ -205,6 +239,33 @@ class DownloadStatusResponse(BaseModel):
     url: str | None = Field(
         None,
         description="Blob URL of the produced file; set only while ready",
+    )
+    error: str | None = Field(None, description="User-safe failure message when failed")
+    filename: str | None = Field(
+        None,
+        description="Filename the client should save the file under",
+    )
+
+
+class NotesCreateResponse(BaseModel):
+    """Response schema for a queued lecture-notes request."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str = Field(..., description="Lifecycle state; starts as pending")
+
+
+class NotesStatusResponse(BaseModel):
+    """Response schema for the lecture-notes status route."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str = Field(..., description="pending | processing | ready | failed")
+    url: str | None = Field(
+        None,
+        description="Blob URL of the generated PDF; set only while ready",
     )
     error: str | None = Field(None, description="User-safe failure message when failed")
     filename: str | None = Field(
@@ -356,6 +417,30 @@ class InternalDownloadResponse(BaseModel):
     height: int | None = None
 
 
+class InternalNotesLine(BaseModel):
+    """One timestamped transcript line sent to the worker."""
+
+    seconds: float = Field(..., ge=0, description="Start position of the line in seconds")
+    text: str = Field(..., min_length=1, description="Line text")
+
+
+class InternalNotesResponse(BaseModel):
+    """Response schema for GET /internal/notes/{note_id}."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    note_id: UUID
+    video_id: UUID
+    youtube_video_id: str
+    youtube_url: str
+    title: str
+    duration_seconds: int | None = None
+    language: str | None = None
+    is_rtl: bool = False
+    status: str
+    transcript_lines: list[InternalNotesLine] = Field(default_factory=list)
+
+
 class InternalDownloadReadyRequest(BaseModel):
     """Request schema for POST /internal/downloads/{download_id}/ready."""
 
@@ -386,6 +471,44 @@ class AssemblyWebhookStatus(str, Enum):
 
     COMPLETED = "completed"
     ERROR = "error"
+
+
+class BenchmarkBackendInfo(BaseModel):
+    """Backend-side context for a database benchmark."""
+
+    timestamp: datetime
+    region: str | None = None
+    platform: str | None = None
+
+
+class BenchmarkDatabaseInfo(BaseModel):
+    """Database-side context for a database benchmark."""
+
+    timestamp: datetime
+    server_version: str
+    host: str | None = None
+    name: str | None = None
+
+
+class BenchmarkLatency(BaseModel):
+    """Connection and query round-trip timings in milliseconds."""
+
+    connect_ms: float
+    first_query_ms: float
+    min_ms: float
+    median_ms: float
+    mean_ms: float
+    p95_ms: float
+    samples_ms: list[float]
+
+
+class BenchmarkResponse(BaseModel):
+    """Response schema for GET /internal/benchmark/db."""
+
+    backend: BenchmarkBackendInfo
+    database: BenchmarkDatabaseInfo
+    latency: BenchmarkLatency
+    samples: int
 
 
 class AssemblyWebhookRequest(BaseModel):

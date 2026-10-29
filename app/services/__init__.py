@@ -18,6 +18,8 @@ from app.services.video_downloads import (
     download_filename,
     validated_range,
 )
+from app.services.video_notes import VideoNotesService
+from app.services.video_workspace import VideoWorkspaceService
 
 __all__ = [
     "FullTextSearchService",
@@ -26,6 +28,8 @@ __all__ = [
     "TranscriptLine",
     "TranscriptPdfRenderer",
     "VideoDownloadService",
+    "VideoNotesService",
+    "VideoWorkspaceService",
     "VideoFormatsService",
     "assemble_lines",
     "download_filename",
