@@ -159,6 +159,17 @@ class NotesNotFoundError(NotFoundError):
         )
 
 
+class SummaryNotFoundError(NotFoundError):
+    """Exception for a video-summary request that does not resolve."""
+
+    def __init__(self, summary_id: str) -> None:
+        super().__init__(
+            f"Video summary with id {summary_id} not found",
+            resource="summary",
+            resource_id=summary_id,
+        )
+
+
 class InvalidYouTubeURLError(DomainError):
     """Exception for invalid YouTube URL (domain validation, not format validation)."""
 

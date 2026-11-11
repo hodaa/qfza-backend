@@ -4,6 +4,7 @@ from .transcript_word_repository import TranscriptWordRepository
 from .video_download_repository import VideoDownloadRepository
 from .video_note_repository import VideoNoteRepository
 from .video_repository import VideoRepository
+from .video_summary_repository import VideoSummaryRepository
 
 __all__ = [
     "ContactRepository",
@@ -11,5 +12,6 @@ __all__ = [
     "TranscriptWordRepository",
     "VideoDownloadRepository",
     "VideoNoteRepository",
+    "VideoSummaryRepository",
     "VideoRepository",
 ]

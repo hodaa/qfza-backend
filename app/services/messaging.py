@@ -11,6 +11,7 @@ _WORKER_TASK_NAME = "app.tasks.transcription.download_and_transcribe"
 _DOWNLOAD_TASK_NAME = "app.tasks.downloads.download_video"
 _FORMATS_TASK_NAME = "app.tasks.formats.probe_video_formats"
 _NOTES_TASK_NAME = "app.tasks.notes.generate_lecture_notes"
+_SUMMARY_TASK_NAME = "app.tasks.summaries.generate_video_summary"
 
 _settings = get_settings()
 
@@ -85,3 +86,8 @@ def dispatch_formats_probe(youtube_video_id: str, youtube_url: str) -> None:
 def dispatch_lecture_notes(note_id: UUID) -> None:
     """Publish a lecture-notes request to the worker's queue."""
     celery_app.send_task(_NOTES_TASK_NAME, args=[str(note_id)])
+
+
+def dispatch_video_summary(summary_id: UUID) -> None:
+    """Publish a video-summary request to the worker's queue."""
+    celery_app.send_task(_SUMMARY_TASK_NAME, args=[str(summary_id)])

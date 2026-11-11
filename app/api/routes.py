@@ -13,7 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import get_db_session
 from app.core.exceptions import VideoNotFoundError, VideoNotTranscribedError
 from app.core.logging import get_logger
-from app.models import Video, VideoDownload, VideoNote
+from app.models import Video, VideoDownload, VideoNote, VideoSummary
 from app.repositories import (
     ContactRepository,
     JobRepository,
@@ -21,6 +21,7 @@ from app.repositories import (
     VideoDownloadRepository,
     VideoNoteRepository,
     VideoRepository,
+    VideoSummaryRepository,
 )
 from app.repositories.search_history_repository import SearchHistoryRepository
 from app.schemas import (
@@ -38,6 +39,8 @@ from app.schemas import (
     SearchResponseProcessing,
     SearchStatus,
     StatusResponse,
+    SummaryCreateResponse,
+    SummaryStatusResponse,
     VideoFormatsResponse,
     VideoPrepareResponse,
     VideoResolveRequest,
@@ -52,6 +55,7 @@ from app.services import (
     VideoDownloadService,
     VideoFormatsService,
     VideoNotesService,
+    VideoSummaryService,
     VideoWorkspaceService,
     assemble_lines,
     download_filename,
@@ -67,6 +71,7 @@ from app.services.messaging import (
     dispatch_lecture_notes,
     dispatch_transcription,
     dispatch_video_download,
+    dispatch_video_summary,
 )
 from app.services.video_downloads import STATUS_READY
 from app.sources import identify_video
@@ -163,6 +168,21 @@ def get_video_notes_service(
 ) -> VideoNotesService:
     """Build the lecture-notes lifecycle service."""
     return VideoNotesService(video_repo, note_repo)
+
+
+def get_video_summary_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> VideoSummaryRepository:
+    """Build a video-summary repository for the request session."""
+    return VideoSummaryRepository(session)
+
+
+def get_video_summary_service(
+    video_repo: VideoRepository = Depends(get_video_repo),
+    summary_repo: VideoSummaryRepository = Depends(get_video_summary_repo),
+) -> VideoSummaryService:
+    """Build the video-summary lifecycle service."""
+    return VideoSummaryService(video_repo, summary_repo)
 
 
 def get_video_workspace_service(
@@ -542,6 +562,51 @@ async def get_video_notes_status(
 
 
 @router.post(
+    "/api/videos/{youtube_video_id}/summaries",
+    response_model=SummaryCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        202: {"model": SummaryCreateResponse, "description": "Video summary queued"},
+        404: {"description": "Video not found or not transcribed"},
+    },
+)
+async def create_video_summary(
+    youtube_video_id: str,
+    regenerate: bool = Query(False, description="Retire the cached MP4 and render again"),
+    summary_service: VideoSummaryService = Depends(get_video_summary_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> SummaryCreateResponse:
+    """Queue a highlight video, or return the cached/active request.
+
+    Ready summaries are cached by video, so a second click returns the same MP4
+    instead of paying for another render unless regeneration is asked.
+    """
+    summary = await summary_service.create(youtube_video_id, regenerate=regenerate)
+    await session.commit()
+    if summary.status == "pending":
+        await asyncio.to_thread(dispatch_video_summary, summary.id)
+    return SummaryCreateResponse(id=summary.id, status=summary.status)
+
+
+@router.get(
+    "/api/videos/{youtube_video_id}/summaries/{summary_id}",
+    response_model=SummaryStatusResponse,
+    responses={
+        200: {"model": SummaryStatusResponse, "description": "Video summary status"},
+        404: {"description": "Video or video summary not found"},
+    },
+)
+async def get_video_summary_status(
+    youtube_video_id: str,
+    summary_id: UUID,
+    summary_service: VideoSummaryService = Depends(get_video_summary_service),
+) -> SummaryStatusResponse:
+    """Return a video-summary request's state, URL once ready, and filename."""
+    summary = await summary_service.get(youtube_video_id, summary_id)
+    return _summary_status_response(summary, youtube_video_id)
+
+
+@router.post(
     "/api/videos/{youtube_video_id}/downloads",
     response_model=DownloadCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -619,6 +684,17 @@ def _notes_status_response(note: VideoNote, youtube_video_id: str) -> NotesStatu
         url=note.blob_url if note.status == "ready" else None,
         error=note.error,
         filename=download_filename(youtube_video_id, prefix="notes", suffix=".pdf"),
+    )
+
+
+def _summary_status_response(summary: VideoSummary, youtube_video_id: str) -> SummaryStatusResponse:
+    """Map a video-summary row to the API contract."""
+    return SummaryStatusResponse(
+        id=summary.id,
+        status=summary.status,
+        url=summary.blob_url if summary.status == "ready" else None,
+        error=summary.error,
+        filename=download_filename(youtube_video_id, prefix="summary", suffix=".mp4"),
     )
 
 

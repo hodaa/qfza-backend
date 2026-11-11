@@ -10,6 +10,7 @@ from .models import (
     Video,
     VideoDownload,
     VideoNote,
+    VideoSummary,
 )
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "Video",
     "VideoDownload",
     "VideoNote",
+    "VideoSummary",
     "TranscriptWord",
     "Job",
     "User",

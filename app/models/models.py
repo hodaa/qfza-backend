@@ -299,6 +299,56 @@ class VideoNote(Base):
         return f"<VideoNote(id={self.id}, video_id={self.video_id}, status={self.status})>"
 
 
+class VideoSummary(Base):
+    """An AI-selected highlight video for one transcribed video.
+
+    The backend queues the request, the worker scores the transcript, cuts and
+    concatenates the selected moments, uploads the MP4, and reports its blob
+    URL. A ready row is reused so repeat clicks do not pay for another render.
+    """
+
+    __tablename__ = "video_summaries"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    video_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    blob_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_video_summaries_video_in_flight",
+            "video_id",
+            unique=True,
+            postgresql_where="status IN ('pending', 'processing')",
+        ),
+        Index("idx_video_summaries_video_id", "video_id"),
+        Index("idx_video_summaries_status_updated", "status", "updated_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<VideoSummary(id={self.id}, video_id={self.video_id}, status={self.status})>"
+
+
 class User(Base):
     """A registered account. Anonymous visitors never have a row here."""
 

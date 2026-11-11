@@ -24,6 +24,7 @@ from app.repositories import (
     VideoDownloadRepository,
     VideoNoteRepository,
     VideoRepository,
+    VideoSummaryRepository,
 )
 from app.schemas import (
     BenchmarkBackendInfo,
@@ -40,12 +41,14 @@ from app.schemas import (
     InternalProgressRequest,
     InternalStatusResponse,
     InternalStoreTranscriptRequest,
+    InternalSummaryResponse,
     InternalVideoFormatsRequest,
 )
 from app.services import (
     JobService,
     VideoDownloadService,
     VideoNotesService,
+    VideoSummaryService,
     assemble_lines,
     is_rtl_transcript,
 )
@@ -168,6 +171,13 @@ async def _get_notes_service(
 ) -> VideoNotesService:
     """Build a lecture-notes service bound to the request session."""
     return VideoNotesService(VideoRepository(session), VideoNoteRepository(session))
+
+
+async def _get_summary_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> VideoSummaryService:
+    """Build a video-summary service bound to the request session."""
+    return VideoSummaryService(VideoRepository(session), VideoSummaryRepository(session))
 
 
 @router.get(
@@ -461,6 +471,83 @@ async def internal_fail_notes(
     note = await notes_service.mark_failed(note_id, request.error)
     await session.commit()
     return InternalStatusResponse(status=note.status)
+
+
+@router.get(
+    "/internal/summaries/{summary_id}",
+    response_model=InternalSummaryResponse,
+    dependencies=[Depends(_verify_internal_api_key)],
+    responses={401: {"description": "Invalid API key"}, 404: {"description": "Summary not found"}},
+)
+async def internal_get_summary(
+    summary_id: UUID,
+    summary_service: VideoSummaryService = Depends(_get_summary_service),
+    word_repo: TranscriptWordRepository = Depends(_get_word_repo),
+) -> InternalSummaryResponse:
+    """Return the video and timestamped transcript needed to render a summary."""
+    summary, video = await summary_service.get_for_worker(summary_id)
+    words = await word_repo.list_all_for_video(video.id)
+    lines = assemble_lines(words)
+    return InternalSummaryResponse(
+        summary_id=summary.id,
+        video_id=summary.video_id,
+        youtube_video_id=video.video_id,
+        youtube_url=video.video_url,
+        title=video.title or video.video_id,
+        duration_seconds=video.duration_seconds,
+        language=video.language,
+        target_seconds=None,
+        status=summary.status,
+        transcript_lines=[{"seconds": line.seconds, "text": line.text} for line in lines],
+    )
+
+
+@router.post(
+    "/internal/summaries/{summary_id}/advance",
+    response_model=InternalStatusResponse,
+    dependencies=[Depends(_verify_internal_api_key)],
+)
+async def internal_advance_summary(
+    summary_id: UUID,
+    summary_service: VideoSummaryService = Depends(_get_summary_service),
+) -> InternalStatusResponse:
+    """Mark a video-summary request as processing."""
+    summary = await summary_service.mark_processing(summary_id)
+    return InternalStatusResponse(status=summary.status)
+
+
+@router.post(
+    "/internal/summaries/{summary_id}/ready",
+    response_model=InternalStatusResponse,
+    dependencies=[Depends(_verify_internal_api_key)],
+)
+async def internal_mark_summary_ready(
+    summary_id: UUID,
+    request: InternalDownloadReadyRequest,
+    summary_service: VideoSummaryService = Depends(_get_summary_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> InternalStatusResponse:
+    """Record the uploaded video-summary MP4 URL."""
+    summary = await summary_service.mark_ready(summary_id, request.blob_url)
+    await session.commit()
+    return InternalStatusResponse(status=summary.status)
+
+
+@router.post(
+    "/internal/summaries/{summary_id}/failed",
+    response_model=InternalStatusResponse,
+    dependencies=[Depends(_verify_internal_api_key)],
+)
+async def internal_fail_summary(
+    summary_id: UUID,
+    request: InternalDownloadFailRequest,
+    summary_service: VideoSummaryService = Depends(_get_summary_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> InternalStatusResponse:
+    """Mark a video-summary request as failed with a user-safe message."""
+    summary = await summary_service.mark_failed(summary_id, request.error)
+    await session.commit()
+    return InternalStatusResponse(status=summary.status)
 
 
 @router.post(

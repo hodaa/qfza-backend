@@ -417,6 +417,33 @@ class InternalDownloadResponse(BaseModel):
     height: int | None = None
 
 
+class SummaryCreateResponse(BaseModel):
+    """Response schema for a queued video-summary request."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str = Field(..., description="Lifecycle state; starts as pending")
+
+
+class SummaryStatusResponse(BaseModel):
+    """Response schema for the video-summary status route."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str = Field(..., description="pending | processing | ready | failed")
+    url: str | None = Field(
+        None,
+        description="Blob URL of the generated MP4; set only while ready",
+    )
+    error: str | None = Field(None, description="User-safe failure message when failed")
+    filename: str | None = Field(
+        None,
+        description="Filename the client should save the file under",
+    )
+
+
 class InternalNotesLine(BaseModel):
     """One timestamped transcript line sent to the worker."""
 
@@ -439,6 +466,30 @@ class InternalNotesResponse(BaseModel):
     is_rtl: bool = False
     status: str
     transcript_lines: list[InternalNotesLine] = Field(default_factory=list)
+
+
+class InternalSummaryLine(BaseModel):
+    """One timestamped transcript line sent to the summary worker."""
+
+    seconds: float = Field(..., ge=0, description="Start position of the line in seconds")
+    text: str = Field(..., min_length=1, description="Line text")
+
+
+class InternalSummaryResponse(BaseModel):
+    """Response schema for GET /internal/summaries/{summary_id}."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    summary_id: UUID
+    video_id: UUID
+    youtube_video_id: str
+    youtube_url: str
+    title: str
+    duration_seconds: int | None = None
+    language: str | None = None
+    target_seconds: int | None = None
+    status: str
+    transcript_lines: list[InternalSummaryLine] = Field(default_factory=list)
 
 
 class InternalDownloadReadyRequest(BaseModel):

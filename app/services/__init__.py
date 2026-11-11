@@ -19,6 +19,7 @@ from app.services.video_downloads import (
     validated_range,
 )
 from app.services.video_notes import VideoNotesService
+from app.services.video_summaries import VideoSummaryService
 from app.services.video_workspace import VideoWorkspaceService
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "TranscriptPdfRenderer",
     "VideoDownloadService",
     "VideoNotesService",
+    "VideoSummaryService",
     "VideoWorkspaceService",
     "VideoFormatsService",
     "assemble_lines",
